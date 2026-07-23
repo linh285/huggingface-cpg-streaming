@@ -1,0 +1,97 @@
+# =============================================================================
+# Task 5 - Source Metadata Ingestion into MongoDB (LINKED OVERLAY)
+# -----------------------------------------------------------------------------
+# This overlay wires Task 5 onto the SAME shared Kafka broker defined by Task 3
+# (../compose.yml), so a single stream of events from Task 2 feeds BOTH sinks:
+#   cpg.nodes / cpg.edges -> Neo4j   (Task 4 overlay)
+#   cpg.metadata          -> MongoDB (this file, via Spark)
+#
+# It adds only MongoDB + the Spark Structured Streaming job and reuses Task 3's
+# broker at its internal listener kafka:19092. (For a self-contained Task 5 that
+# brings its own Kafka, use ../docker-compose.task5.yml instead.)
+#
+# Full linked pipeline, run from the repository ROOT:
+#   docker compose -f compose.yml \
+#                  -f task4/docker-compose.yml \
+#                  -f task5/docker-compose.yml up -d
+#
+# Because the first -f is ../compose.yml, the Compose project directory is the
+# repo root, so the "./task5" bind-mount below resolves to <repo>/task5.
+# =============================================================================
+
+services:
+  # Ensure the metadata topic exists on the SHARED Task 3 broker (idempotent).
+  kafka-init-metadata:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - /bin/bash
+      - -ec
+      - >
+        /opt/kafka/bin/kafka-topics.sh
+        --bootstrap-server kafka:19092
+        --create --if-not-exists
+        --topic cpg.metadata
+        --partitions 1 --replication-factor 1
+        --config cleanup.policy=compact
+    restart: "no"
+
+  mongodb:
+    image: mongo:8.0
+    hostname: mongodb
+    container_name: cpg-mongodb
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"quit(db.adminCommand('ping').ok ? 0 : 2)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  metadata-stream:
+    image: spark:4.1.2-scala2.13-java17-python3-ubuntu
+    hostname: metadata-stream
+    container_name: cpg-metadata-stream
+    user: "0:0"
+    depends_on:
+      kafka-init-metadata:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+    environment:
+      # Consume from the SHARED Task 3 broker (internal listener).
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_METADATA_TOPIC: cpg.metadata
+      KAFKA_STARTING_OFFSETS: earliest
+      MONGODB_URI: mongodb://mongodb:27017
+      MONGODB_DATABASE: cpg
+      MONGODB_COLLECTION: source_metadata
+      CHECKPOINT_LOCATION: /opt/spark-checkpoints/cpg-metadata
+      STREAM_TRIGGER: 5 seconds
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - local[2]
+      - --conf
+      - spark.jars.ivy=/tmp/.ivy2
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.2,org.mongodb.spark:mongo-spark-connector_2.13:11.1.0
+      - /opt/app/task5/metadata_stream.py
+    ports:
+      - "${SPARK_UI_PORT:-4040}:4040"
+    volumes:
+      - ./task5:/opt/app/task5:ro
+      - spark-checkpoints:/opt/spark-checkpoints
+      - spark-ivy-cache:/tmp/.ivy2
+    restart: unless-stopped
+
+volumes:
+  mongodb-data:
+  spark-checkpoints:
+  spark-ivy-cache:

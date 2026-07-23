@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/linh285/huggingface-cpg-streaming/task3/schemas/node-event.schema.json",
+  "title": "CPG Node Event",
+  "description": "Event emitted to cpg.nodes when a CPG node is upserted or deleted.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_type",
+    "event_time",
+    "repository",
+    "commit_sha",
+    "file_id",
+    "file_path",
+    "content_hash",
+    "node_id",
+    "node_type",
+    "line_start",
+    "column_start"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "event_type":     { "enum": ["NODE_UPSERT", "NODE_DELETE"] },
+    "event_time":     { "type": "string", "format": "date-time" },
+    "repository":     { "type": "string", "minLength": 1 },
+    "commit_sha":     { "type": "string", "minLength": 7 },
+    "file_id":        { "type": "string", "minLength": 1 },
+    "file_path":      { "type": "string", "minLength": 1 },
+    "content_hash":   { "type": "string", "minLength": 1 },
+    "node_id":        { "type": "string", "minLength": 1 },
+    "node_type":      { "type": "string", "minLength": 1 },
+    "name":           { "type": ["string", "null"] },
+    "line_start":     { "type": "integer", "minimum": 1 },
+    "column_start":   { "type": "integer", "minimum": 0 },
+    "line_end":       { "type": ["integer", "null"], "minimum": 1 },
+    "column_end":     { "type": ["integer", "null"], "minimum": 0 },
+    "properties":     { "type": "object" }
+  },
+  "additionalProperties": true
+}

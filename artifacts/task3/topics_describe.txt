@@ -1,0 +1,20 @@
+============================================================
+Topic: cpg.nodes
+Topic: cpg.nodes	TopicId: dce7RYlHRVG5lJ4JkPqw4g	PartitionCount: 1	ReplicationFactor: 1	Configs: min.insync.replicas=1,cleanup.policy=compact
+	Topic: cpg.nodes	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+
+============================================================
+Topic: cpg.edges
+Topic: cpg.edges	TopicId: HJDET6eTTvyROBqqG6d08w	PartitionCount: 1	ReplicationFactor: 1	Configs: min.insync.replicas=1,cleanup.policy=compact
+	Topic: cpg.edges	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+
+============================================================
+Topic: cpg.metadata
+Topic: cpg.metadata	TopicId: Wn79q10fTq6RDRq0pk5whQ	PartitionCount: 1	ReplicationFactor: 1	Configs: min.insync.replicas=1,cleanup.policy=compact
+	Topic: cpg.metadata	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+
+============================================================
+Topic: cpg.errors
+Topic: cpg.errors	TopicId: P92U0eFpScKOgibwRUwiJw	PartitionCount: 1	ReplicationFactor: 1	Configs: min.insync.replicas=1,cleanup.policy=delete,retention.ms=604800000
+	Topic: cpg.errors	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+

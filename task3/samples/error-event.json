@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_type": "PARSER_ERROR",
+  "event_time": "2026-07-23T12:00:00Z",
+  "repository": "huggingface/datasets",
+  "commit_sha": "9598254d3e4a1f2b3c4d5e6f7a8b9c0d1e2f3a4b",
+  "file_id": "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "file_path": "src/datasets/broken_example.py",
+  "content_hash": "sha256:cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+  "error_id": "err:SyntaxError:broken_example.py:AST_PARSE:L25:C8",
+  "stage": "AST_PARSE",
+  "error_type": "SyntaxError",
+  "message": "invalid syntax – unexpected token '>'",
+  "line": 25,
+  "column": 8,
+  "retryable": false
+}

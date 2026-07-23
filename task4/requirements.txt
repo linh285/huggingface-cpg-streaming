@@ -1,0 +1,7 @@
+# Task 4 (and Task 6) Python dependencies
+kafka-python>=2.0.2
+neo4j>=5.20.0
+
+# Optional: only needed for the MongoDB half of the Task 6 cross-sink check
+# (verify_idempotency.py). Safe to skip if you only verify Neo4j.
+pymongo>=4.6.0

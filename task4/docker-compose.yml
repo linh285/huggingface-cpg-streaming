@@ -1,0 +1,90 @@
+# =============================================================================
+# Task 4 - Graph Topology Ingestion into Neo4j (OVERLAY)
+# -----------------------------------------------------------------------------
+# This file is an OVERLAY on top of the Task 3 broker (../compose.yml). It adds
+# only the two services Task 4 needs -- Neo4j and a Kafka Connect worker with
+# the Neo4j Sink plugin -- and reuses the single Kafka broker defined by Task 3.
+# There is NO Spark layer between Kafka and Neo4j (lab requirement 1.5).
+#
+# Run it together with the Task 3 broker from the repository root:
+#     docker compose -f compose.yml -f task4/docker-compose.yml up -d
+#
+# Because both files merge into one Compose project they share one network, so
+# kafka-connect reaches the Task 3 broker at its internal listener kafka:19092.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Neo4j graph database (target of the topology ingestion)
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5.20-community
+    hostname: neo4j
+    container_name: cpg-neo4j
+    ports:
+      - "7474:7474" # HTTP Browser UI
+      - "7687:7687" # Bolt protocol
+    environment:
+      NEO4J_AUTH: "neo4j/cpgpassword"
+      NEO4J_PLUGINS: '["apoc"]'  # apoc.convert.toJson is used to flatten nested properties
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Kafka Connect worker with the Neo4j Sink connector plugin
+  # ---------------------------------------------------------------------------
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.8.0
+    hostname: kafka-connect
+    container_name: cpg-kafka-connect
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    ports:
+      - "8083:8083" # Connect REST API
+    environment:
+      # Reach the Task 3 broker via its internal listener on the shared network.
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:19092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: "cpg-connect-cluster"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Task 2 events are plain JSON without an embedded Connect schema.
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+    # Install the Neo4j Sink plugin on first boot, then start the worker.
+    command:
+      - bash
+      - -c
+      - |
+        echo "[connect] Installing Neo4j Kafka Connector plugin..."
+        confluent-hub install --no-prompt neo4j/neo4j-kafka-connector:5.1.0
+        echo "[connect] Starting Kafka Connect worker..."
+        /etc/confluent/docker/run
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  neo4j-data:
+  neo4j-logs:

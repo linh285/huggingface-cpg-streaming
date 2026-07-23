@@ -1,0 +1,25 @@
+{
+  "name": "neo4j-sink-cpg-nodes",
+  "config": {
+    "connector.class": "org.neo4j.connectors.kafka.sink.Neo4jConnector",
+    "topics": "cpg.nodes",
+    "tasks.max": "1",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "neo4j.uri": "bolt://neo4j:7687",
+    "neo4j.authentication.type": "BASIC",
+    "neo4j.authentication.basic.username": "neo4j",
+    "neo4j.authentication.basic.password": "cpgpassword",
+    "neo4j.database": "neo4j",
+
+    "errors.tolerance": "all",
+    "errors.log.enable": "true",
+    "errors.log.include.messages": "true",
+
+    "_comment_strategy": "Cypher strategy: the record value is bound to `event`. MERGE on the deterministic node_id guarantees idempotency -- reprocessing the same node event updates the existing node instead of creating a duplicate. coalesce() makes the query tolerant to BOTH the field names actually emitted by Task 2 (label/lineno/col_offset) and the Task 3 TOPIC_CONTRACT aliases (name/line_start/column_start). Nested `properties` is flattened to a JSON string because Neo4j cannot store a nested map as a property.",
+    "neo4j.cypher.topic.cpg.nodes": "MERGE (n:CPGNode {node_id: event.node_id}) SET n.file_id = event.file_id, n.file_path = coalesce(event.file_path, event.path), n.node_type = event.node_type, n.label = coalesce(event.label, event.name), n.code = event.code, n.lineno = coalesce(event.lineno, event.line_start), n.col_offset = coalesce(event.col_offset, event.column_start), n.end_lineno = coalesce(event.end_lineno, event.line_end), n.end_col_offset = coalesce(event.end_col_offset, event.column_end), n.schema_version = toString(event.schema_version), n.event_time = event.event_time, n.properties_json = apoc.convert.toJson(event.properties)"
+  }
+}
