@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.work/
+
+# Local working repositories
+.work/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
