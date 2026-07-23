@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "event_time": "2026-07-23T10:00:00Z",
+  "event_type": "metadata",
+  "file_id": "task6-demo-file",
+  "repository": "huggingface/datasets",
+  "path": "src/datasets/task6_demo.py",
+  "language": "python",
+  "size_bytes": 120,
+  "line_count": 8,
+  "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ast_node_count": 12,
+  "cfg_edge_count": 5,
+  "dfg_edge_count": 3,
+  "call_edge_count": 1,
+  "status": "PARSED"
+}

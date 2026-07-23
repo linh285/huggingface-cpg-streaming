@@ -218,6 +218,9 @@ __marimo__/
 .streamlit/secrets.toml
 .work/
 
+# Local Spark/Kafka/MongoDB runtime data
+.runtime/
+
 # Local working repositories
 .work/
 

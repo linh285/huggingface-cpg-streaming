@@ -74,7 +74,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        default=True,
+        default=False,
         help="Force writing to local JSONL files instead of sending to Kafka.",
     )
 
