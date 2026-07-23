@@ -226,3 +226,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Large JSONL event dumps
+artifacts/**/*.jsonl
