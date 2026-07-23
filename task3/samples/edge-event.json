@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_type": "EDGE_UPSERT",
+  "event_time": "2026-07-23T12:00:00Z",
+  "repository": "huggingface/datasets",
+  "commit_sha": "9598254d3e4a1f2b3c4d5e6f7a8b9c0d1e2f3a4b",
+  "file_id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "file_path": "src/datasets/arrow_dataset.py",
+  "content_hash": "sha256:a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+  "edge_id": "edge:AST:node:Module:arrow_dataset.py:L1->node:FunctionDef:arrow_dataset.py:map:L610",
+  "edge_type": "AST",
+  "source_node_id": "node:Module:arrow_dataset.py:L1",
+  "target_node_id": "node:FunctionDef:arrow_dataset.py:map:L610",
+  "properties": {
+    "child_index": 42
+  }
+}
