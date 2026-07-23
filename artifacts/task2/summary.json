@@ -1,0 +1,17 @@
+{
+  "repository": "huggingface/datasets",
+  "total_files_targeted": 147,
+  "processed_files": 147,
+  "error_files": 0,
+  "total_nodes_emitted": 135287,
+  "total_edges_emitted": 302897,
+  "cpg_breakdown": {
+    "ast_nodes": 135287,
+    "cfg_edges": 16197,
+    "dfg_edges": 67331,
+    "call_edges": 11734
+  },
+  "execution_duration_sec": 6.731,
+  "executed_at": "2026-07-23T08:04:31.105798+00:00",
+  "dry_run": true
+}

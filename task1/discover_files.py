@@ -22,6 +22,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 
 DEFAULT_REPO_URL = "https://github.com/huggingface/datasets.git"
 DEFAULT_REPOSITORY_NAME = "huggingface/datasets"
