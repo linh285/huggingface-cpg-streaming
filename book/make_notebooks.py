@@ -534,7 +534,8 @@ dữ liệu.
 
 Collection có 147 document, 147 `_id`, 147 `file_id`, không thiếu file trong
 manifest và đủ `path`, `content_sha256`, `kafka_partition`, `kafka_offset`.
-Checkpoint có 76 file ở lần xác minh cuối. UI chỉ phục vụ quan sát; verifier
+Checkpoint tại `/opt/spark-checkpoints/cpg-metadata` tồn tại và có dữ liệu;
+verifier yêu cầu `checkpoint_file_count > 0`. UI chỉ phục vụ quan sát; verifier
 dùng truy vấn MongoDB và Spark UI để quyết định kết quả.
 """
         ),
