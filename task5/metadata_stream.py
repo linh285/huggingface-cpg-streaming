@@ -25,6 +25,7 @@ def metadata_schema() -> StructType:
             StructField("line_count", IntegerType(), False),
             StructField("content_sha256", StringType(), False),
             StructField("ast_node_count", IntegerType(), False),
+            StructField("ast_edge_count", IntegerType(), False),
             StructField("cfg_edge_count", IntegerType(), False),
             StructField("dfg_edge_count", IntegerType(), False),
             StructField("call_edge_count", IntegerType(), False),
@@ -79,7 +80,8 @@ def main() -> None:
     metadata = (
         decoded_events.where(
             col("event").isNotNull()
-            & (col("event.event_type") == "metadata")
+            & (col("event.event_type") == "FILE_METADATA_UPSERT")
+            & (col("event.schema_version") == "1.0.0")
             & col("event.file_id").isNotNull()
         )
         .select(

@@ -20,28 +20,9 @@
 # =============================================================================
 
 services:
-  # Ensure the metadata topic exists on the SHARED Task 3 broker (idempotent).
-  kafka-init-metadata:
-    image: apache/kafka:4.3.1
-    depends_on:
-      kafka:
-        condition: service_healthy
-    command:
-      - /bin/bash
-      - -ec
-      - >
-        /opt/kafka/bin/kafka-topics.sh
-        --bootstrap-server kafka:19092
-        --create --if-not-exists
-        --topic cpg.metadata
-        --partitions 1 --replication-factor 1
-        --config cleanup.policy=compact
-    restart: "no"
-
   mongodb:
     image: mongo:8.0
     hostname: mongodb
-    container_name: cpg-mongodb
     ports:
       - "${MONGODB_PORT:-27017}:27017"
     volumes:
@@ -54,13 +35,25 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    profiles: ["ui"]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    ports:
+      - "${MONGO_EXPRESS_PORT:-8081}:8081"
+    restart: unless-stopped
+
   metadata-stream:
     image: spark:4.1.2-scala2.13-java17-python3-ubuntu
     hostname: metadata-stream
-    container_name: cpg-metadata-stream
     user: "0:0"
     depends_on:
-      kafka-init-metadata:
+      kafka-init:
         condition: service_completed_successfully
       mongodb:
         condition: service_healthy
