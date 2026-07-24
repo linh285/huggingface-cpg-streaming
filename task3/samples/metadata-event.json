@@ -1,22 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": "1.0.0",
   "event_type": "FILE_METADATA_UPSERT",
-  "event_time": "2026-07-23T12:00:00Z",
+  "event_time": "2026-07-23T10:00:00Z",
   "repository": "huggingface/datasets",
-  "commit_sha": "9598254d3e4a1f2b3c4d5e6f7a8b9c0d1e2f3a4b",
-  "file_id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "file_path": "src/datasets/arrow_dataset.py",
-  "content_hash": "sha256:a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+  "file_id": "ef73a9c1b79b71681f6110d07260f0139d34a8c19beccca1dbfc8b34f8bc019c",
+  "path": "src/datasets/task6_demo.py",
+  "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "language": "python",
-  "size_bytes": 158430,
-  "line_count": 4362,
-  "parse_status": "SUCCESS",
-  "node_count": 8740,
-  "edge_count": {
-    "AST": 8200,
-    "CFG": 420,
-    "DFG": 310,
-    "CALL": 215
-  },
-  "parser_duration_ms": 1840
+  "size_bytes": 120,
+  "line_count": 8,
+  "ast_node_count": 12,
+  "ast_edge_count": 11,
+  "cfg_edge_count": 5,
+  "dfg_edge_count": 3,
+  "call_edge_count": 1,
+  "status": "PARSED"
 }
