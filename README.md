@@ -56,11 +56,19 @@ docker compose -f compose.yml -f task4/docker-compose.yml \
 # Đăng ký hoặc cập nhật hai Neo4j sink connector
 bash task4/scripts/register_connectors.sh
 
-# Task 2: phát toàn bộ corpus thật vào Kafka
+# Task 2 dry-run: kiểm tra parser và sinh JSONL cục bộ
 python task2/parser_service.py \
   --manifest artifacts/task1/python_manifest.jsonl \
   --repo-dir .work/repos/datasets \
-  --kafka-bootstrap localhost:9092
+  --dry-run \
+  --output-dir artifacts/task2
+
+# Task 2 Kafka mode: phát toàn bộ 147 file vào stack đang chạy
+python task2/parser_service.py \
+  --manifest artifacts/task1/python_manifest.jsonl \
+  --repo-dir .work/repos/datasets \
+  --kafka-bootstrap localhost:9092 \
+  --summary-output artifacts/task2/kafka_publish_summary.json
 ```
 
 Lần đầu Kafka Connect và Spark tải connector package, vì vậy cần chờ healthcheck
@@ -103,6 +111,14 @@ Hợp đồng chuẩn dùng `schema_version="1.0.0"`, `path`, `content_sha256`,
 curl http://localhost:8083/connectors/neo4j-sink-cpg-nodes/status
 curl http://localhost:8083/connectors/neo4j-sink-cpg-edges/status
 python task4/verify_neo4j.py
+
+# Xác minh graph của toàn bộ 147 file
+python task4/verify_neo4j.py --connect-url http://localhost:8083 \
+  --expected-nodes 208003 --expected-edges 267695 \
+  --expected-ast-edges 207856 --expected-cfg-edges 18549 \
+  --expected-dfg-edges 29557 --expected-call-edges 11733 \
+  --require-zero-placeholders --timeout 300 \
+  --json artifacts/task4/neo4j_corpus_verification.json
 ```
 
 Neo4j Browser: <http://localhost:7474>, đăng nhập `neo4j/cpgpassword`.
@@ -127,6 +143,13 @@ docker compose -f compose.yml -f task4/docker-compose.yml \
 Spark UI: <http://localhost:4040>. Task 5 parse JSON bằng `StructType`, đặt
 `_id=file_id`, rồi `replace` với `upsertDocument=true` trong từng micro-batch.
 Named volume `spark-checkpoints` giữ checkpoint qua restart.
+
+Xác minh 147 document, đối chiếu manifest, Spark query và checkpoint:
+
+```bash
+python task5/verify_mongodb_corpus.py --timeout 300 \
+  --json-output artifacts/task5/mongodb_corpus_verification.json
+```
 
 ## Task 6 — replay đầy đủ
 
@@ -171,8 +194,9 @@ Spark checkpoint, Ivy cache hoặc `book/_build/`.
 
 ## Build Jupyter Book
 
-Book dùng notebook đã thực thi và lưu output thật. Sau khi chạy regression và
-cập nhật các artifact:
+Sau khi chạy các verifier và cập nhật artifact, generator kiểm tra count bắt
+buộc, tạo notebook từ artifact rồi execute cell. Generator không tự chạy parser,
+database verifier hoặc Task 6:
 
 ```bash
 python -m pip install -r book/requirements.txt

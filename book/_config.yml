@@ -8,7 +8,7 @@ execute:
 
 repository:
   url: https://github.com/linh285/huggingface-cpg-streaming
-  branch: fix/lab04-final-integration
+  branch: main
   path_to_book: book
 
 html:

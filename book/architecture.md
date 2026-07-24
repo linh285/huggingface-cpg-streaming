@@ -13,7 +13,7 @@ riêng vào `cpg.errors`, không được trộn vào database sink.
 | Parser | `file_id`, `node_id`, `edge_id` SHA-256 tất định | UPSERT và DELETE event |
 | Kafka | record key tương ứng với ID | compact cho node/edge/metadata |
 | Neo4j | `node_id`, `edge_id` | Cypher `MERGE`; DELETE dọn revision cũ |
-| MongoDB | `_id = file_id` | replace/upsert trong `foreachBatch` |
+| MongoDB | `_id = file_id` | MongoDB Spark Connector replace/upsert |
 | Spark | Kafka offsets | checkpoint trên named Docker volume |
 
 Không có nhánh node/edge nào đi qua Spark.

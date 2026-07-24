@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build and execute the six evidence notebooks from checked-in artifacts."""
+"""Generate and execute the six Jupyter Book task notebooks from artifacts."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -12,9 +13,19 @@ from nbclient import NotebookClient
 
 
 BOOK = Path(__file__).resolve().parent
+ROOT = BOOK.parent
 REPO_URL = "https://github.com/linh285/huggingface-cpg-streaming"
-BRANCH = "fix/lab04-final-integration"
-SOURCE = f"{REPO_URL}/blob/{BRANCH}"
+SOURCE = f"{REPO_URL}/blob/main"
+
+EXPECTED_FILES = 147
+EXPECTED_NODES = 208003
+EXPECTED_EDGES = 267695
+EXPECTED_EDGE_BREAKDOWN = {
+    "AST": 207856,
+    "CFG": 18549,
+    "DFG": 29557,
+    "CALL": 11733,
+}
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -26,6 +37,94 @@ def markdown(text: str):
 
 def code(source: str):
     return nbformat.v4.new_code_cell(source.strip() + "\n")
+
+
+def load_json(relative_path: str) -> dict:
+    return json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def validate_artifacts() -> None:
+    """Stop notebook generation when a required live result is missing."""
+    dry = load_json("artifacts/task2/summary.json")
+    live = load_json("artifacts/task2/kafka_publish_summary.json")
+    corpus = load_json("artifacts/task2/corpus_verification.json")
+    neo4j = load_json("artifacts/task4/neo4j_corpus_verification.json")
+    mongo = load_json("artifacts/task5/mongodb_corpus_verification.json")
+    replay = load_json("artifacts/task6/replay_result.json")
+
+    require(dry["dry_run"] is True, "Task 2 dry-run summary is not a dry-run")
+    require(live["dry_run"] is False, "Task 2 Kafka summary is not live mode")
+    for name, result in (("dry-run", dry), ("Kafka", live)):
+        require(
+            result["total_files_targeted"] == EXPECTED_FILES
+            and result["processed_files"] == EXPECTED_FILES
+            and result["error_files"] == 0,
+            f"Task 2 {name} file counts are incomplete",
+        )
+        require(
+            result["total_nodes_emitted"] == EXPECTED_NODES
+            and result["total_edges_emitted"] == EXPECTED_EDGES,
+            f"Task 2 {name} graph counts do not match the corpus",
+        )
+    require(
+        corpus["distinct_node_ids"] == EXPECTED_NODES
+        and corpus["distinct_edge_ids"] == EXPECTED_EDGES
+        and corpus["missing_edge_sources"] == 0
+        and corpus["missing_edge_targets"] == 0,
+        "Task 2 corpus verification failed",
+    )
+
+    counts = neo4j["counts"]
+    require(
+        neo4j["status"] == "PASS"
+        and counts["total_nodes"] == EXPECTED_NODES
+        and counts["distinct_node_ids"] == EXPECTED_NODES
+        and counts["total_edges"] == EXPECTED_EDGES
+        and counts["distinct_edge_ids"] == EXPECTED_EDGES
+        and counts["placeholder_nodes"] == 0
+        and neo4j["edge_breakdown"] == EXPECTED_EDGE_BREAKDOWN,
+        "Task 4 full-corpus verification failed",
+    )
+    for name, status in neo4j["connectors"].items():
+        require(
+            status["connector"] == "RUNNING"
+            and status["tasks"]
+            and all(task == "RUNNING" for task in status["tasks"]),
+            f"Task 4 connector is not running: {name}",
+        )
+
+    require(
+        mongo["status"] == "PASS"
+        and mongo["total_documents"] == EXPECTED_FILES
+        and mongo["distinct_file_ids"] == EXPECTED_FILES
+        and mongo["distinct_document_ids"] == EXPECTED_FILES
+        and mongo["id_file_id_mismatches"] == 0
+        and not mongo["missing_manifest_file_ids"]
+        and not mongo["unexpected_document_ids"]
+        and mongo["spark_query"]["status"] == "RUNNING"
+        and mongo["checkpoint_file_count"] > 0,
+        "Task 5 full-corpus verification failed",
+    )
+
+    phases = replay["phase_comparison"]
+    require(
+        replay["status"] == "PASS"
+        and phases["baseline"]["global_nodes"] == EXPECTED_NODES
+        and phases["baseline"]["global_edges"] == EXPECTED_EDGES
+        and phases["modified_replay"]["global_nodes"] == 208014
+        and phases["modified_replay"]["global_edges"] == 267709
+        and phases["restart"]["mongo_documents_before"] == EXPECTED_FILES
+        and phases["restart"]["mongo_documents_after"] == EXPECTED_FILES
+        and phases["restart"]["snapshots_equal"] is True
+        and phases["cleanup"]["global_nodes"] == EXPECTED_NODES
+        and phases["cleanup"]["global_edges"] == EXPECTED_EDGES,
+        "Task 6 replay verification failed",
+    )
 
 
 def write_and_execute(name: str, cells: list) -> None:
@@ -40,16 +139,15 @@ def write_and_execute(name: str, cells: list) -> None:
             "language_info": {"name": "python", "version": "3"},
         },
     )
-    client = NotebookClient(
+    NotebookClient(
         notebook,
         timeout=120,
         kernel_name="python3",
         allow_errors=False,
-    )
-    client.execute(cwd=str(BOOK))
+    ).execute(cwd=str(BOOK))
     destination = BOOK / f"{name}.ipynb"
     nbformat.write(notebook, destination)
-    print(f"[OK] executed {destination.relative_to(BOOK.parent)}")
+    print(f"[OK] executed {destination.relative_to(ROOT)}")
 
 
 def task1_cells() -> list:
@@ -58,25 +156,27 @@ def task1_cells() -> list:
             f"""
 # Task 1 — Repository Cloning and File Discovery
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Shallow-clone repository được phân công, liệt kê toàn bộ file Python và ghi lại
-số file. Đề cho phép loại test, setup và file sinh tự động.
+Shallow-clone repository được phân công, liệt kê file Python và lưu tập file đầu
+vào cho Parser Service.
 
-## Cách triển khai và lý do
+## Thiết kế và triển khai
 
-[`task1/discover_files.py`]({SOURCE}/task1/discover_files.py) clone với
-`--depth 1`, chuẩn hóa đường dẫn POSIX, tính `file_id =
-SHA256("huggingface/datasets:" + path)` và xuất manifest JSONL. Cách này giữ
-download nhỏ, đồng thời trao cho Task 2 một khóa file không phụ thuộc nội dung.
+[`task1/discover_files.py`]({SOURCE}/task1/discover_files.py) dùng `--depth 1`,
+chuẩn hóa đường dẫn POSIX và tạo `file_id` bằng SHA-256 của
+`huggingface/datasets:<path>`. Khóa này không phụ thuộc nội dung, nên một file
+giữ nguyên định danh khi revision thay đổi.
 
-Chính sách lọc nằm ngay trong artifact, vì vậy người chấm có thể tái lập đúng
-tập 147 file thay vì dựa vào một con số viết tay.
+## Lệnh thực thi
 
-## Output thật đã chạy
+```bash
+python task1/discover_files.py
+```
 
-Cell dưới đọc [`artifacts/task1/summary.json`]({SOURCE}/artifacts/task1/summary.json)
-được tạo bởi lần chạy discovery cuối.
+## Kết quả thực nghiệm
+
+Cell sau đọc summary do Task 1 sinh ra.
 """
         ),
         code(
@@ -85,32 +185,27 @@ import json
 from pathlib import Path
 
 summary = json.loads(Path("../artifacts/task1/summary.json").read_text(encoding="utf-8"))
+assert summary["selected_python_files"] == 147
 for key in (
     "repository", "commit_sha", "is_shallow_repository",
-    "all_python_files", "selected_python_files", "excluded_python_files"
+    "all_python_files", "selected_python_files", "excluded_python_files",
 ):
     print(f"{key}: {summary[key]}")
 """
         ),
         markdown(
             """
-## Bằng chứng và lỗi đã khắc phục
+## Vấn đề và cách xử lý
 
-Manifest và danh sách selected/excluded nằm trong `artifacts/task1/`. Revision
-upstream thay đổi giữa các lần làm bài nên nhóm không giữ số đếm cũ: lần
-regression cuối chạy lại discovery và lưu cả commit SHA. `.work/repos/datasets`
-là clone runtime và bị loại khỏi Git.
+Revision upstream thay đổi giữa các lần chạy có thể làm số file biến động. Lần
+discovery cuối lưu cả commit SHA, danh sách được chọn và danh sách bị loại;
+clone runtime trong `.work/` không được đưa vào Git.
 
-## Reflection
+## Đánh giá
 
-Tách `file_id` khỏi content hash là quyết định quan trọng: cùng đường dẫn vẫn là
-cùng file ở revision mới, còn `content_sha256` thể hiện revision nội dung.
-
-## Tái lập
-
-```bash
-python task1/discover_files.py
-```
+Task 1 tạo được manifest 147 file và khóa `file_id` ổn định. Điểm cần lưu ý là
+kết quả phụ thuộc đúng commit upstream đã ghi trong artifact; khi đổi commit
+phải chạy lại discovery và các task phía sau.
 """
         ),
     ]
@@ -122,26 +217,37 @@ def task2_cells() -> list:
             f"""
 # Task 2 — Incremental CPG Parser Service
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Parser xử lý từng file trong bounded memory, trích AST, CFG, DFG và call edge,
-gán ID ổn định và phát structured event vào Kafka.
+Xử lý từng file trong bounded memory, trích AST, CFG, DFG và call edge, gán ID
+ổn định rồi phát event theo hợp đồng chung.
 
-## Cách triển khai và lý do
+## Thiết kế và triển khai
 
-[`task2/cpg_parser.py`]({SOURCE}/task2/cpg_parser.py) dùng standard-library
-`ast`, structural path và SHA-256. [`task2/parser_service.py`]({SOURCE}/task2/parser_service.py)
-đọc manifest theo dòng, chỉ giữ một file trong bộ nhớ, phát UPSERT/DELETE và chỉ
-lưu state sau khi producer đã `flush`. State của revision trước cho phép dọn
-node/edge stale khi nội dung thay đổi.
+[`task2/cpg_parser.py`]({SOURCE}/task2/cpg_parser.py) dùng `ast`, structural path
+và SHA-256. [`task2/parser_service.py`]({SOURCE}/task2/parser_service.py) đọc
+manifest theo dòng, chỉ giữ một file trong bộ nhớ, phát UPSERT/DELETE và lưu
+state sau khi Kafka xác nhận batch. Contract thống nhất các trường
+`schema_version`, `path`, `content_sha256`, `source_id`, `target_id` và edge
+type `CALL`.
 
-Hợp đồng dùng thống nhất `schema_version="1.0.0"`, `path`,
-`content_sha256`, `source_id`/`target_id` và edge type `CALL`.
+Dry-run kiểm tra parser trên toàn bộ 147 file và tạo JSONL cục bộ. Kafka mode
+phát cùng corpus vào bốn topic đang chạy; hai chế độ có summary riêng.
 
-## Output thật đã chạy
+## Lệnh thực thi
 
-Cell này đọc summary của parser và kết quả kiểm tra toàn corpus. Script kiểm tra
-đếm distinct ID và toàn bộ endpoint edge.
+```bash
+python task2/parser_service.py --manifest artifacts/task1/python_manifest.jsonl \\
+  --repo-dir .work/repos/datasets --dry-run --output-dir artifacts/task2
+
+python task2/parser_service.py --manifest artifacts/task1/python_manifest.jsonl \\
+  --repo-dir .work/repos/datasets --kafka-bootstrap "$KAFKA_BOOTSTRAP" \\
+  --summary-output artifacts/task2/kafka_publish_summary.json
+```
+
+## Kết quả thực nghiệm
+
+Cell sau đọc cả dry-run summary, Kafka publish summary và corpus verifier.
 """
         ),
         code(
@@ -149,57 +255,51 @@ Cell này đọc summary của parser và kết quả kiểm tra toàn corpus. S
 import json
 from pathlib import Path
 
-summary = json.loads(Path("../artifacts/task2/summary.json").read_text(encoding="utf-8"))
-proof = json.loads(Path("../artifacts/task2/corpus_verification.json").read_text(encoding="utf-8"))
-schema = json.loads(Path("../artifacts/task2/schema_validation.json").read_text(encoding="utf-8"))
-print(json.dumps({
-    "targeted_files": summary["total_files_targeted"],
-    "processed_files": summary["processed_files"],
-    "parser_errors": summary["error_files"],
-    "node_events": proof["node_events"],
-    "distinct_node_ids": proof["distinct_node_ids"],
-    "edge_events": proof["edge_events"],
-    "distinct_edge_ids": proof["distinct_edge_ids"],
-    "metadata_events": proof["metadata_events"],
-    "distinct_metadata_file_ids": proof["distinct_metadata_file_ids"],
-    "missing_edge_sources": proof["missing_edge_sources"],
-    "missing_edge_targets": proof["missing_edge_targets"],
-    "schema_validation": schema,
-}, indent=2))
+def read(name):
+    return json.loads(Path(name).read_text(encoding="utf-8"))
+
+dry = read("../artifacts/task2/summary.json")
+live = read("../artifacts/task2/kafka_publish_summary.json")
+corpus = read("../artifacts/task2/corpus_verification.json")
+schema = read("../artifacts/task2/schema_validation.json")
+
+assert dry["dry_run"] is True and live["dry_run"] is False
+for result in (dry, live):
+    assert result["processed_files"] == 147
+    assert result["error_files"] == 0
+    assert result["total_nodes_emitted"] == 208003
+    assert result["total_edges_emitted"] == 267695
+assert corpus["distinct_node_ids"] == 208003
+assert corpus["distinct_edge_ids"] == 267695
+assert corpus["missing_edge_sources"] == 0
+assert corpus["missing_edge_targets"] == 0
+
+print("mode     files errors nodes  edges  duration_sec")
+for mode, result in (("dry-run", dry), ("Kafka", live)):
+    print(
+        f"{mode:<8} {result['processed_files']:>5} {result['error_files']:>6} "
+        f"{result['total_nodes_emitted']:>6} {result['total_edges_emitted']:>6} "
+        f"{result['execution_duration_sec']:>12}"
+    )
+print("\\ncorpus:", json.dumps(corpus, indent=2))
+print("schema:", json.dumps(schema, indent=2))
 """
         ),
         markdown(
-            f"""
-## Code/lệnh quan trọng
-
-```bash
-python task2/parser_service.py --manifest artifacts/task1/python_manifest.jsonl \\
-  --repo-dir .work/repos/datasets --kafka-bootstrap localhost:9092
-python task2/verify_corpus.py artifacts/task2 --expected-files 147
-```
-
-Source liên quan:
-[`event_contract.py`]({SOURCE}/task2/event_contract.py),
-[`parser_state.py`]({SOURCE}/task2/parser_state.py),
-[`verify_corpus.py`]({SOURCE}/task2/verify_corpus.py).
-
-## Lỗi đã gặp và cách khắc phục
+            """
+## Vấn đề và cách xử lý
 
 Contract cũ từng lệch giữa `CALLS`/`CALL`, `file_path`/`path` và kiểu
-`schema_version`. Nhóm bỏ lớp tương thích mơ hồ, dùng một contract duy nhất và
-thêm test schema bằng event thật. Kiểm tra chỉ dựa vào tổng count cũng chưa bắt
-được ID trùng hoặc endpoint thiếu, nên regression cuối so sánh total với
-distinct và kiểm từng `source_id`, `target_id`.
+`schema_version`; các biến thể được thay bằng một contract và JSON Schema duy
+nhất. Lần publish đầu dừng ở file lớn vì ACK timeout và Docker thiếu RAM. Producer
+được đổi sang batch 1.000 event, gzip và timeout dài hơn; Compose giới hạn heap
+cho Kafka, Kafka Connect, Neo4j và Spark. Lần chạy lại hoàn thành 147 file.
 
-## Reflection
+## Đánh giá
 
-Structural path ổn định hơn số dòng cho replay không đổi; state cũ cộng DELETE
-event mới là phần cần thiết để file sửa không để topology stale.
-
-## Tái lập
-
-Có thể thêm `--dry-run --output-dir artifacts/task2` để sinh JSONL và chạy
-corpus verifier mà không cần Kafka.
+Cả dry-run và Kafka mode đều cho 208.003 node, 267.695 edge, 0 parser error và
+không thiếu endpoint. Giới hạn còn lại là thời gian publish phụ thuộc tài nguyên
+Docker; summary có `fatal_error` nếu hạ tầng dừng giữa chừng.
 """
         ),
     ]
@@ -211,40 +311,20 @@ def task3_cells() -> list:
             f"""
 # Task 3 — Kafka Topic Design
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Có bốn topic tách biệt cho node, edge, metadata và parser error. Mỗi event mang
-schema version và event time.
+Tách node, edge, metadata và parser error thành bốn topic; mọi event mang schema
+version và event time.
 
-## Thiết kế và lý do
+## Thiết kế và triển khai
 
-Node/edge/metadata dùng cleanup `compact` với record key lần lượt là
-`node_id`, `edge_id`, `file_id`; error dùng `delete` và retention bảy ngày.
-Mỗi topic một partition để bảo toàn thứ tự trong môi trường lab một broker.
-Contract và JSON Schema ở
+Node, edge và metadata dùng cleanup `compact`, record key lần lượt là
+`node_id`, `edge_id`, `file_id`. Error dùng cleanup `delete` với retention bảy
+ngày. Contract và schema nằm tại
 [`task3/TOPIC_CONTRACT.md`]({SOURCE}/task3/TOPIC_CONTRACT.md) và
 [`task3/schemas/`]({SOURCE}/task3/schemas).
 
-## Output thật đã chạy
-
-Hai artifact dưới được thu trực tiếp từ Kafka CLI sau khi stack healthy.
-"""
-        ),
-        code(
-            """
-from pathlib import Path
-
-print("TOPICS")
-print(Path("../artifacts/task3/topics_list.txt").read_text(encoding="utf-8").strip())
-print("\\nCONFIG SUMMARY")
-for line in Path("../artifacts/task3/topics_describe.txt").read_text(encoding="utf-8").splitlines():
-    if "PartitionCount:" in line:
-        print(line.strip())
-"""
-        ),
-        markdown(
-            f"""
-## Lệnh quan trọng và bằng chứng
+## Lệnh thực thi
 
 ```bash
 bash task3/create_topics.sh
@@ -254,24 +334,39 @@ bash task3/send_samples.sh
 bash task3/consume_samples.sh
 ```
 
-Compose tạo bốn topic idempotently trong service `kafka-init`; các script vẫn
-được giữ để kiểm tra thủ công. Sample JSON đã được validate theo Draft 2020-12.
+## Kết quả thực nghiệm
+"""
+        ),
+        code(
+            """
+from pathlib import Path
 
-## Lỗi đã gặp và cách khắc phục
+topics = Path("../artifacts/task3/topics_list.txt").read_text(encoding="utf-8").split()
+expected = {"cpg.nodes", "cpg.edges", "cpg.metadata", "cpg.errors"}
+assert set(topics) == expected
+print("topics:", ", ".join(sorted(topics)))
 
-Shell script trên Windows từng có nguy cơ CRLF và Compose từng nội suy nhầm biến
-shell. `.gitattributes` ép LF cho `*.sh`; biến chạy trong container được escape
-đúng để `docker compose config` không làm mất giá trị.
+description = Path("../artifacts/task3/topics_describe.txt").read_text(encoding="utf-8")
+for topic in sorted(expected):
+    assert f"Topic: {topic}" in description
+for line in description.splitlines():
+    if "PartitionCount:" in line:
+        print(line.strip())
+"""
+        ),
+        markdown(
+            """
+## Vấn đề và cách xử lý
 
-## Reflection
+Script shell chạy trên Windows có nguy cơ CRLF và Compose từng nội suy biến
+shell quá sớm. `.gitattributes` ép LF cho `*.sh`, còn biến chạy trong container
+được escape để `docker compose config` giữ nguyên.
 
-Topic ownership rõ ràng giúp kiến trúc không vô tình cho node/edge đi qua Spark.
-Log compaction là lớp hỗ trợ, còn idempotency cuối cùng vẫn do sink upsert.
+## Đánh giá
 
-## Tái lập
-
-Chạy stack từ root, sau đó chạy năm script trên. JSON sample có thể kiểm bằng
-`python -m json.tool` và test contract trong `tests/`.
+Bốn topic tồn tại với đúng cleanup policy và một partition cho môi trường lab.
+Một partition đơn giản hóa thứ tự nhưng không đại diện cho cấu hình scale-out;
+khi tăng partition phải giữ record key ổn định để cùng ID vào cùng partition.
 """
         ),
     ]
@@ -283,24 +378,33 @@ def task4_cells() -> list:
             f"""
 # Task 4 — Graph Topology Ingestion into Neo4j
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Kafka Connector Sink phải ghi node/edge trực tiếp từ Kafka vào Neo4j, không có
-Spark trung gian, và replay không tạo trùng.
+Ghi node và edge trực tiếp từ Kafka Connect vào Neo4j, không qua Spark, đồng
+thời giữ idempotency khi replay.
 
-## Cách triển khai và lý do
+## Thiết kế và triển khai
 
 Hai connector độc lập đọc `cpg.nodes` và `cpg.edges`. Cypher xử lý
-`NODE_UPSERT`/`NODE_DELETE` và `EDGE_UPSERT`/`EDGE_DELETE`; UPSERT dùng `MERGE`
-theo ID, còn DELETE dọn topology revision cũ. Constraint unique cho `node_id`
-được tạo trước khi đăng ký connector.
-
+UPSERT/DELETE; `MERGE` dùng `node_id` hoặc `edge_id`, còn DELETE dọn topology
+của revision trước. Constraint unique được tạo trước khi đăng ký connector.
 Source:
 [`neo4j-sink-nodes.json`]({SOURCE}/task4/connectors/neo4j-sink-nodes.json),
-[`neo4j-sink-edges.json`]({SOURCE}/task4/connectors/neo4j-sink-edges.json),
-[`register_connectors.sh`]({SOURCE}/task4/scripts/register_connectors.sh).
+[`neo4j-sink-edges.json`]({SOURCE}/task4/connectors/neo4j-sink-edges.json).
 
-## Output thật đã chạy
+## Lệnh thực thi
+
+```bash
+bash task4/scripts/register_connectors.sh
+python task4/verify_neo4j.py --connect-url "$KAFKA_CONNECT_URL" \\
+  --expected-nodes 208003 --expected-edges 267695 \\
+  --expected-ast-edges 207856 --expected-cfg-edges 18549 \\
+  --expected-dfg-edges 29557 --expected-call-edges 11733 \\
+  --require-zero-placeholders --timeout 300 \\
+  --json artifacts/task4/neo4j_corpus_verification.json
+```
+
+## Kết quả thực nghiệm
 """
         ),
         code(
@@ -308,40 +412,47 @@ Source:
 import json
 from pathlib import Path
 
-proof = json.loads(Path("../artifacts/task4/neo4j_verification.json").read_text(encoding="utf-8"))
-print(json.dumps(proof, indent=2))
+proof = json.loads(Path("../artifacts/task4/neo4j_corpus_verification.json").read_text(encoding="utf-8"))
+counts = proof["counts"]
+assert proof["status"] == "PASS"
+assert counts == {
+    "total_nodes": 208003,
+    "total_edges": 267695,
+    "distinct_node_ids": 208003,
+    "distinct_edge_ids": 267695,
+    "placeholder_nodes": 0,
+}
+assert proof["edge_breakdown"] == {
+    "AST": 207856, "CFG": 18549, "DFG": 29557, "CALL": 11733
+}
+for status in proof["connectors"].values():
+    assert status["connector"] == "RUNNING"
+    assert status["tasks"] == ["RUNNING"]
+print(json.dumps({
+    "counts": counts,
+    "edge_breakdown": proof["edge_breakdown"],
+    "duplicate_node_ids": len(proof["duplicate_node_ids"]),
+    "duplicate_edge_ids": len(proof["duplicate_edge_ids"]),
+    "connectors": proof["connectors"],
+}, indent=2))
 """
         ),
         markdown(
             """
-## Bằng chứng Neo4j Browser
+![Neo4j Browser — full corpus counts](images/task4/neo4j-full-corpus-counts.jpg)
 
-Ảnh dưới là truy vấn đúng `file_id` dùng trong Task 6. Tổng node/edge bằng số ID
-distinct.
+## Vấn đề và cách xử lý
 
-![Neo4j exact ID counts](images/task4/neo4j-exact-id-counts.png)
+Node và edge nằm ở hai topic nên edge có thể đến trước node; edge connector tạo
+placeholder endpoint và node connector hoàn thiện thuộc tính sau đó. Khi publish
+file lớn, Docker thiếu RAM làm API treo; heap/page cache được giới hạn và
+consumer lag được đưa về 0 trước khi truy vấn.
 
-## Lỗi đã gặp và cách khắc phục
+## Đánh giá
 
-Worker ban đầu không ghi được plugin vào named volume; overlay chạy bước tải
-connector với quyền phù hợp rồi Kafka Connect mới khởi động. Node và edge ở hai
-topic nên có thể đến khác thời điểm; edge connector `MERGE` endpoint placeholder,
-node connector điền đủ thuộc tính khi node event tới. Regression chờ exact ID
-sets thay vì dựa vào sleep cố định.
-
-## Reflection
-
-`MERGE` và constraint giải quyết duplicate; DELETE event mới giải quyết stale
-graph khi source thay đổi. Hai vấn đề này độc lập và đều phải được kiểm thử.
-
-## Tái lập
-
-```bash
-bash task4/scripts/register_connectors.sh
-python task4/verify_neo4j.py
-curl http://localhost:8083/connectors/neo4j-sink-cpg-nodes/status
-curl http://localhost:8083/connectors/neo4j-sink-cpg-edges/status
-```
+Neo4j chứa 208.003 node và 267.695 edge, bằng đúng số ID distinct; placeholder
+và duplicate đều bằng 0. Hệ thống hiện dùng một connector task cho mỗi topic,
+phù hợp máy lab nhưng thông lượng phụ thuộc tài nguyên Neo4j.
 """
         ),
     ]
@@ -353,20 +464,26 @@ def task5_cells() -> list:
             f"""
 # Task 5 — Source Metadata Ingestion into MongoDB
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Spark Structured Streaming đọc metadata từ Kafka, parse JSON bằng schema rõ
-ràng, ghi MongoDB và dùng checkpoint để tiếp tục đúng offset sau restart.
+Đọc metadata từ Kafka bằng Spark Structured Streaming, parse JSON theo schema,
+upsert vào MongoDB và tiếp tục đúng offset sau restart.
 
-## Cách triển khai và lý do
+## Thiết kế và triển khai
 
 [`task5/metadata_stream.py`]({SOURCE}/task5/metadata_stream.py) dùng
-`StructType`, chỉ nhận `FILE_METADATA_UPSERT` schema `1.0.0`, thêm Kafka
-partition/offset và ghi từng micro-batch bằng replace/upsert. `_id=file_id` làm
-khóa duy nhất; checkpoint ở `/opt/spark-checkpoints/cpg-metadata` được gắn vào
-named Docker volume.
+`StructType`, chỉ nhận `FILE_METADATA_UPSERT` schema `1.0.0`, bổ sung Kafka
+partition/offset rồi ghi replace/upsert với `_id=file_id`. Checkpoint
+`/opt/spark-checkpoints/cpg-metadata` nằm trên named Docker volume.
 
-## Output thật đã chạy
+## Lệnh thực thi
+
+```bash
+python task5/verify_mongodb_corpus.py --timeout 300 \\
+  --json-output artifacts/task5/mongodb_corpus_verification.json
+```
+
+## Kết quả thực nghiệm
 """
         ),
         code(
@@ -374,42 +491,51 @@ named Docker volume.
 import json
 from pathlib import Path
 
-proof = json.loads(Path("../artifacts/task5/mongodb_verification.json").read_text(encoding="utf-8"))
-print(json.dumps(proof, indent=2))
+proof = json.loads(Path("../artifacts/task5/mongodb_corpus_verification.json").read_text(encoding="utf-8"))
+assert proof["status"] == "PASS"
+assert proof["total_documents"] == 147
+assert proof["distinct_file_ids"] == 147
+assert proof["distinct_document_ids"] == 147
+assert proof["id_file_id_mismatches"] == 0
+assert not proof["missing_manifest_file_ids"]
+assert not proof["unexpected_document_ids"]
+assert all(value == 0 for value in proof["required_field_missing"].values())
+assert proof["spark_query"]["status"] == "RUNNING"
+assert proof["checkpoint_file_count"] > 0
+print(json.dumps({
+    "total_documents": proof["total_documents"],
+    "distinct_file_ids": proof["distinct_file_ids"],
+    "distinct_document_ids": proof["distinct_document_ids"],
+    "id_file_id_mismatches": proof["id_file_id_mismatches"],
+    "required_field_missing": proof["required_field_missing"],
+    "spark_query": {
+        "name": proof["spark_query"]["name"],
+        "status": proof["spark_query"]["status"],
+    },
+    "checkpoint_location": proof["checkpoint_location"],
+    "checkpoint_file_count": proof["checkpoint_file_count"],
+}, indent=2))
 """
         ),
         markdown(
             """
-## Bằng chứng Spark và MongoDB
+![Spark Structured Streaming — query RUNNING](images/task5/spark-full-corpus-running.jpg)
 
-![Spark Structured Streaming query](images/task5/spark-structured-streaming.png)
+![Mongo Express — source_metadata có 147 document](images/task5/mongodb-full-corpus.jpg)
 
-![MongoDB source_metadata document](images/task5/mongodb-source-metadata.png)
+## Vấn đề và cách xử lý
 
-Mongo Express chỉ là profile UI tùy chọn để chụp bằng chứng; pipeline mặc định
-không phụ thuộc vào service này.
+Spark cần tải connector packages ở lần khởi động đầu và từng cạnh tranh bộ nhớ
+với Neo4j. Ivy cache, checkpoint volume và giới hạn driver memory giúp restart
+nhanh hơn. Mongo Express chỉ được bật ở profile `ui`, không tham gia đường ghi
+dữ liệu.
 
-## Lỗi đã gặp và cách khắc phục
+## Đánh giá
 
-Lần đầu Spark cần tải connector packages nên query khởi động chậm. Nhóm dùng
-named Ivy cache và healthcheck thay vì coi container `Up` là stream đã sẵn sàng.
-Pull Mongo Express từng lỗi DNS; service được chuyển sang profile `ui` để lỗi UI
-không làm full stack thất bại.
-
-## Reflection
-
-Checkpoint bảo vệ offset, còn MongoDB upsert bảo vệ dữ liệu. Chỉ một trong hai
-không đủ để chứng minh exactly-once effect ở collection.
-
-## Tái lập
-
-```bash
-docker compose -f compose.yml -f task4/docker-compose.yml -f task5/docker-compose.yml up -d
-docker compose -f compose.yml -f task4/docker-compose.yml -f task5/docker-compose.yml \\
-  exec -T mongodb mongosh --quiet cpg --eval 'db.source_metadata.countDocuments()'
-docker compose -f compose.yml -f task4/docker-compose.yml -f task5/docker-compose.yml \\
-  exec -T metadata-stream sh -c 'find /opt/spark-checkpoints/cpg-metadata -type f | wc -l'
-```
+Collection có 147 document, 147 `_id`, 147 `file_id`, không thiếu file trong
+manifest và đủ `path`, `content_sha256`, `kafka_partition`, `kafka_offset`.
+Checkpoint có 76 file ở lần xác minh cuối. UI chỉ phục vụ quan sát; verifier
+dùng truy vấn MongoDB và Spark UI để quyết định kết quả.
 """
         ),
     ]
@@ -421,24 +547,29 @@ def task6_cells() -> list:
             f"""
 # Task 6 — Idempotent Replay Verification
 
-## Yêu cầu của đề
+## Mục tiêu
 
-Sửa một file Python thật, reprocess đúng file đó và chứng minh Neo4j cập nhật
-không trùng, MongoDB có metadata mới trong đúng một document, Spark restart dùng
-checkpoint.
+Reprocess một file không đổi, sửa file đó rồi reprocess, restart Spark và cuối
+cùng phục hồi source/database về revision gốc mà không tạo dữ liệu trùng hoặc
+stale.
 
-## Cách triển khai và lý do
+## Thiết kế và triển khai
 
-[`task6/replay_single_file.py`]({SOURCE}/task6/replay_single_file.py) tự động:
-publish baseline, publish lại cùng revision, thêm tạm một hàm vào file thật,
-publish revision mới, restart Spark, rồi khôi phục file và hai database về
-revision gốc. Mỗi pha chờ đến khi Neo4j có exact node/edge ID sets và MongoDB có
-đúng một `_id=file_id`; không dùng count gần đúng.
+[`task6/replay_single_file.py`]({SOURCE}/task6/replay_single_file.py) so sánh
+exact node/edge ID sets cho từng pha, kiểm count toàn graph, giữ
+`file_id` ổn định và dùng `content_sha256` làm revision. Trước restart, script
+chụp `(_id, content_sha256, kafka_offset, processed_at)` của đủ 147 document;
+sau khi query Spark trở lại `RUNNING`, script poll collection liên tục trong
+15 giây và toàn bộ snapshot phải giữ nguyên.
 
-`content_sha256` là revision nội dung của contract hiện tại. `file_id` chỉ phụ
-thuộc repository + path nên không đổi qua hai revision.
+## Lệnh thực thi
 
-## Output thật đã chạy
+```bash
+python task6/replay_single_file.py \\
+  --file src/datasets/utils/experimental.py --timeout 600
+```
+
+## Kết quả thực nghiệm
 """
         ),
         code(
@@ -447,45 +578,84 @@ import json
 from pathlib import Path
 
 report = json.loads(Path("../artifacts/task6/replay_result.json").read_text(encoding="utf-8"))
-print(json.dumps(report, indent=2))
+phases = report["phase_comparison"]
+assert report["status"] == "PASS"
+assert report["file_id_stable_across_revisions"] is True
+assert report["duplicate_node_ids"] == 0
+assert report["duplicate_edge_ids"] == 0
+assert phases["baseline"] == {
+    "file_nodes": 57, "file_edges": 75,
+    "global_nodes": 208003, "global_edges": 267695,
+    "mongo_documents": 147,
+}
+assert phases["unchanged_replay"] == phases["baseline"]
+assert phases["modified_replay"] == {
+    "file_nodes": 68, "file_edges": 89,
+    "global_nodes": 208014, "global_edges": 267709,
+    "mongo_documents": 147,
+}
+assert phases["restart"] == {
+    "mongo_documents_before": 147,
+    "mongo_documents_after": 147,
+    "snapshots_equal": True,
+}
+assert phases["cleanup"] == phases["baseline"]
+
+print("phase              file N/E   global N/E       Mongo docs")
+for name in ("baseline", "unchanged_replay", "modified_replay", "cleanup"):
+    phase = phases[name]
+    print(
+        f"{name:<18} {phase['file_nodes']:>3}/{phase['file_edges']:<3} "
+        f"{phase['global_nodes']:>6}/{phase['global_edges']:<6} "
+        f"{phase['mongo_documents']:>10}"
+    )
+print("\\nrestart:", json.dumps(phases["restart"], indent=2))
+print(
+    "checkpoint files:",
+    report["spark_restart"]["checkpoint_files_before"],
+    "->",
+    report["spark_restart"]["checkpoint_files_after"],
+)
+print(
+    "restart observation:",
+    report["spark_restart"]["observation_seconds"],
+    "seconds /",
+    report["spark_restart"]["observation_checks"],
+    "snapshot checks",
+)
+print("original hash:", report["original_content_sha256"])
+print("modified hash:", report["modified_content_sha256"])
+print("cleanup hash:", report["cleanup_restore"]["mongo_content_sha256"])
 """
         ),
         markdown(
             """
-## Bằng chứng chéo
+![Neo4j sau cleanup](images/task4/neo4j-full-corpus-counts.jpg)
 
-Các ảnh Neo4j, Spark và MongoDB trong Task 4–5 được chụp trong cùng stack và
-cùng `file_id` của báo cáo trên. File JSON ghi offset trước/sau restart và kết
-quả cleanup.
+![Spark query sau restart](images/task5/spark-full-corpus-running.jpg)
 
-## Lỗi đã gặp và cách khắc phục
+![MongoDB sau cleanup](images/task5/mongodb-full-corpus.jpg)
 
-Kiểm tra count toàn cục có thể PASS dù còn ID stale. Script được đổi sang so
-sánh tập ID exact, bắt buộc cả connector và connector task `RUNNING`, bắt buộc
-MongoDB count theo `_id` và `file_id` đều bằng 1, đồng thời kiểm
-`processed_at`/offset không đổi qua restart. `finally` luôn phục hồi file thật
-và phát revision gốc để database không bị để lại ở trạng thái demo.
+## Vấn đề và cách xử lý
 
-## Reflection
+Chỉ kiểm count từng file có thể bỏ sót tác động lên phần còn lại của corpus.
+Script được mở rộng để kiểm cả per-file và global count, bắt duplicate trên
+toàn graph và so sánh 147 document qua restart. Khối `finally` phục hồi file và
+publish revision gốc ngay cả khi một pha trước lỗi.
 
-Idempotency cần kiểm ba trạng thái: cùng revision, revision mới và restart.
-Cleanup cũng là một phần của test, không phải thao tác thủ công sau cùng.
+## Đánh giá
 
-## Tái lập
-
-```bash
-python task6/replay_single_file.py \
-  --file src/datasets/utils/experimental.py
-```
-
-Kết thúc hợp lệ phải có `status: PASS`, zero missing/stale/duplicate, MongoDB
-count 1, hash cleanup bằng hash gốc và offset restart không đổi.
+Baseline và cleanup đều là 57/75 cho file, 208.003/267.695 toàn graph; revision
+tạm là 68/89 và 208.014/267.709. MongoDB giữ 147 document trong mọi pha, hai
+snapshot restart giống nhau và hash cleanup trở về hash gốc. Test hiện phụ thuộc
+stack local còn đủ RAM và các connector ở trạng thái `RUNNING`.
 """
         ),
     ]
 
 
 def main() -> None:
+    validate_artifacts()
     notebooks = {
         "task1": task1_cells(),
         "task2": task2_cells(),
