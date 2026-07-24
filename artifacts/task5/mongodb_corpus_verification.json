@@ -1,0 +1,30 @@
+{
+  "status": "PASS",
+  "verified_at": "2026-07-24T09:16:07.328240+00:00",
+  "manifest": "artifacts\\task1\\python_manifest.jsonl",
+  "expected_documents": 147,
+  "total_documents": 147,
+  "distinct_file_ids": 147,
+  "distinct_document_ids": 147,
+  "id_file_id_mismatches": 0,
+  "duplicate_file_ids": [],
+  "missing_manifest_file_ids": [],
+  "unexpected_document_ids": [],
+  "required_field_missing": {
+    "path": 0,
+    "content_sha256": 0,
+    "kafka_partition": 0,
+    "kafka_offset": 0
+  },
+  "mongodb_database": "cpg",
+  "mongodb_collection": "source_metadata",
+  "spark_query": {
+    "name": "cpg_metadata_to_mongodb",
+    "status": "RUNNING",
+    "ui_url": "http://localhost:4040/StreamingQuery/"
+  },
+  "stream_container_state": "running",
+  "checkpoint_location": "/opt/spark-checkpoints/cpg-metadata",
+  "checkpoint_file_count": 108,
+  "mismatches": []
+}

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mongo-database", default="cpg")
     parser.add_argument("--mongo-collection", default="source_metadata")
     parser.add_argument("--connect-url", default="http://localhost:8083")
+    parser.add_argument("--spark-ui-url", default="http://localhost:4040")
+    parser.add_argument("--expected-corpus-files", type=int, default=147)
+    parser.add_argument("--expected-corpus-nodes", type=int, default=208003)
+    parser.add_argument("--expected-corpus-edges", type=int, default=267695)
+    parser.add_argument(
+        "--restart-observation-seconds",
+        type=int,
+        default=15,
+        help="Continuous no-event observation window after Spark becomes active.",
+    )
     parser.add_argument(
         "--state-dir",
         type=Path,
@@ -68,7 +79,6 @@ def parse_args() -> argparse.Namespace:
         help="Compose file; repeat to override the default full-stack set.",
     )
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--restart-wait", type=int, default=20)
     parser.add_argument(
         "--json-output",
         type=Path,
@@ -158,18 +168,125 @@ def neo4j_ids(driver: Any, database: str, file_id: str) -> tuple[set[str], set[s
     return node_ids, edge_ids
 
 
-def duplicate_counts(driver: Any, database: str) -> tuple[int, int]:
+def global_graph_snapshot(driver: Any, database: str) -> dict[str, int]:
     with driver.session(database=database) as session:
-        node_duplicates = session.run(
-            "MATCH (n:CPGNode) WITH n.node_id AS id, count(*) AS count "
-            "WHERE count > 1 RETURN coalesce(sum(count - 1), 0) AS value"
-        ).single()["value"]
-        edge_duplicates = session.run(
+        nodes = session.run(
+            "MATCH (n:CPGNode) "
+            "RETURN count(n) AS total, "
+            "count(DISTINCT n.node_id) AS distinct_total, "
+            "count(CASE WHEN n.node_type IS NULL THEN 1 END) AS placeholders"
+        ).single()
+        edges = session.run(
             "MATCH ()-[r:CPG_EDGE]->() "
-            "WITH r.edge_id AS id, count(*) AS count "
-            "WHERE count > 1 RETURN coalesce(sum(count - 1), 0) AS value"
-        ).single()["value"]
-    return int(node_duplicates), int(edge_duplicates)
+            "RETURN count(r) AS total, "
+            "count(DISTINCT r.edge_id) AS distinct_total"
+        ).single()
+    return {
+        "total_nodes": int(nodes["total"]),
+        "distinct_node_ids": int(nodes["distinct_total"]),
+        "placeholder_nodes": int(nodes["placeholders"]),
+        "total_edges": int(edges["total"]),
+        "distinct_edge_ids": int(edges["distinct_total"]),
+    }
+
+
+def require_global_counts(
+    snapshot: dict[str, int],
+    expected_nodes: int,
+    expected_edges: int,
+    phase: str,
+) -> None:
+    expected = {
+        "total_nodes": expected_nodes,
+        "distinct_node_ids": expected_nodes,
+        "placeholder_nodes": 0,
+        "total_edges": expected_edges,
+        "distinct_edge_ids": expected_edges,
+    }
+    differences = {
+        key: {"expected": value, "actual": snapshot.get(key)}
+        for key, value in expected.items()
+        if snapshot.get(key) != value
+    }
+    if differences:
+        raise RuntimeError(f"{phase} global graph mismatch: {differences}")
+
+
+def normalized_collection_snapshot(collection: Any) -> list[dict[str, Any]]:
+    def normalized(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, int):
+            return int(value)
+        return value
+
+    documents: list[dict[str, Any]] = []
+    projection = {
+        "_id": 1,
+        "content_sha256": 1,
+        "kafka_offset": 1,
+        "processed_at": 1,
+    }
+    for document in collection.find({}, projection).sort("_id", 1):
+        documents.append(
+            {
+                key: normalized(document.get(key))
+                for key in (
+                    "_id",
+                    "content_sha256",
+                    "kafka_offset",
+                    "processed_at",
+                )
+            }
+        )
+    return documents
+
+
+def wait_for_spark_query(
+    spark_ui_url: str,
+    query_name: str,
+    timeout: int,
+) -> dict[str, str]:
+    url = f"{spark_ui_url.rstrip('/')}/StreamingQuery/"
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                html = response.read().decode("utf-8", errors="replace")
+            if (
+                f"<td>{query_name}</td>" in html
+                and "<td>RUNNING</td>" in html
+                and "Active Streaming Queries (1)" in html
+            ):
+                return {"name": query_name, "status": "RUNNING", "ui_url": url}
+            last_error = "query is not listed as RUNNING"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(2)
+    raise RuntimeError(
+        f"Spark query {query_name} did not become RUNNING: {last_error}"
+    )
+
+
+def observe_unchanged_collection(
+    collection: Any,
+    expected: list[dict[str, Any]],
+    observation_seconds: int,
+) -> tuple[list[dict[str, Any]], int]:
+    deadline = time.monotonic() + observation_seconds
+    checks = 0
+    latest = normalized_collection_snapshot(collection)
+    while True:
+        checks += 1
+        if latest != expected:
+            raise RuntimeError(
+                "MongoDB collection changed after Spark restart without a new event"
+            )
+        if time.monotonic() >= deadline:
+            return latest, checks
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+        latest = normalized_collection_snapshot(collection)
 
 
 def mongo_document(
@@ -191,6 +308,7 @@ def wait_for_exact_state(
     expected_edges: set[str],
     expected_hash: str,
     timeout: int,
+    expected_collection_documents: int,
     minimum_mongo_offset: int | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
@@ -202,6 +320,8 @@ def wait_for_exact_state(
         )
         actual_hash = document.get("content_sha256") if document else None
         mongo_offset = document.get("kafka_offset") if document else None
+        collection_documents = collection.count_documents({})
+        distinct_file_ids = len(collection.distinct("file_id"))
         last = {
             "expected_node_count": len(expected_nodes),
             "actual_node_count": len(actual_nodes),
@@ -215,6 +335,8 @@ def wait_for_exact_state(
             "mongo_file_id_count": mongo_file_count,
             "mongo_content_sha256": actual_hash,
             "mongo_kafka_offset": mongo_offset,
+            "mongo_collection_documents": collection_documents,
+            "mongo_distinct_file_ids": distinct_file_ids,
         }
         if (
             actual_nodes == expected_nodes
@@ -223,6 +345,8 @@ def wait_for_exact_state(
             and mongo_file_count == 1
             and actual_hash == expected_hash
             and isinstance(mongo_offset, int)
+            and collection_documents == expected_collection_documents
+            and distinct_file_ids == expected_collection_documents
             and (
                 minimum_mongo_offset is None
                 or mongo_offset >= minimum_mongo_offset
@@ -271,13 +395,13 @@ def checkpoint_file_count(args: argparse.Namespace) -> int:
 def restart_spark_and_verify_checkpoint(
     args: argparse.Namespace,
     collection: Any,
-    file_id: str,
 ) -> dict[str, Any]:
-    before = collection.find_one({"_id": file_id})
-    if before is None:
-        raise RuntimeError("MongoDB document disappeared before Spark restart")
-    offset_before = before.get("kafka_offset")
-    processed_before = before.get("processed_at")
+    before = normalized_collection_snapshot(collection)
+    if len(before) != args.expected_corpus_files:
+        raise RuntimeError(
+            "MongoDB corpus size before restart is "
+            f"{len(before)}, expected {args.expected_corpus_files}"
+        )
     files_before = checkpoint_file_count(args)
     if files_before <= 0:
         raise RuntimeError("Spark checkpoint directory contains no files")
@@ -287,27 +411,28 @@ def restart_spark_and_verify_checkpoint(
         cwd=PROJECT_ROOT,
         check=True,
     )
-    time.sleep(args.restart_wait)
-
-    after = collection.find_one({"_id": file_id})
-    if after is None:
-        raise RuntimeError("MongoDB document disappeared after Spark restart")
+    query = wait_for_spark_query(
+        args.spark_ui_url,
+        "cpg_metadata_to_mongodb",
+        args.timeout,
+    )
+    after, observation_checks = observe_unchanged_collection(
+        collection,
+        before,
+        args.restart_observation_seconds,
+    )
     files_after = checkpoint_file_count(args)
-    if after.get("kafka_offset") != offset_before:
-        raise RuntimeError(
-            "Spark replayed an already committed Kafka offset after restart: "
-            f"{offset_before} -> {after.get('kafka_offset')}"
-        )
-    if after.get("processed_at") != processed_before:
-        raise RuntimeError(
-            "MongoDB document was rewritten without a new Kafka event after "
-            "Spark restart"
-        )
     return {
-        "offset_before": offset_before,
-        "offset_after": after.get("kafka_offset"),
+        "document_count_before": len(before),
+        "document_count_after": len(after),
+        "snapshots_equal": before == after,
+        "documents_before": before,
+        "documents_after": after,
         "checkpoint_files_before": files_before,
         "checkpoint_files_after": files_after,
+        "spark_query": query,
+        "observation_seconds": args.restart_observation_seconds,
+        "observation_checks": observation_checks,
     }
 
 
@@ -359,7 +484,40 @@ def main() -> int:
         "file_id_stable_across_revisions": True,
         "original_content_sha256": original[3],
         "modified_content_sha256": modified[3],
+        "expected_file_counts": {
+            "baseline_nodes": len(original[1]),
+            "baseline_edges": len(original[2]),
+            "modified_nodes": len(modified[1]),
+            "modified_edges": len(modified[2]),
+        },
+        "expected_global_counts": {
+            "baseline_nodes": args.expected_corpus_nodes,
+            "baseline_edges": args.expected_corpus_edges,
+            "modified_nodes": (
+                args.expected_corpus_nodes + len(modified[1]) - len(original[1])
+            ),
+            "modified_edges": (
+                args.expected_corpus_edges + len(modified[2]) - len(original[2])
+            ),
+        },
+        "global_counts": {},
     }
+    required_file_counts = (57, 75, 68, 89)
+    actual_file_counts = (
+        len(original[1]),
+        len(original[2]),
+        len(modified[1]),
+        len(modified[2]),
+    )
+    if actual_file_counts != required_file_counts:
+        print(
+            "[FAIL] Unexpected Task 6 per-file counts: "
+            f"expected {required_file_counts}, got {actual_file_counts}",
+            file=sys.stderr,
+        )
+        driver.close()
+        mongo.close()
+        return 2
 
     try:
         driver.verify_connectivity()
@@ -384,10 +542,19 @@ def main() -> int:
             expected_edges=original[2],
             expected_hash=original[3],
             timeout=args.timeout,
+            expected_collection_documents=args.expected_corpus_files,
             minimum_mongo_offset=(
                 prior_offset + 1 if prior_offset is not None else None
             ),
         )
+        baseline_global = global_graph_snapshot(driver, args.neo4j_database)
+        require_global_counts(
+            baseline_global,
+            args.expected_corpus_nodes,
+            args.expected_corpus_edges,
+            "baseline",
+        )
+        report["global_counts"]["baseline"] = baseline_global
         first_offset = report["first_publish"]["mongo_kafka_offset"]
 
         print("[2/5] Replay the unchanged file and same revision")
@@ -401,8 +568,17 @@ def main() -> int:
             expected_edges=original[2],
             expected_hash=original[3],
             timeout=args.timeout,
+            expected_collection_documents=args.expected_corpus_files,
             minimum_mongo_offset=first_offset + 1,
         )
+        unchanged_global = global_graph_snapshot(driver, args.neo4j_database)
+        require_global_counts(
+            unchanged_global,
+            args.expected_corpus_nodes,
+            args.expected_corpus_edges,
+            "unchanged replay",
+        )
+        report["global_counts"]["unchanged_replay"] = unchanged_global
         unchanged_offset = report["unchanged_replay"]["mongo_kafka_offset"]
 
         print("[3/5] Publish a modified revision of the same real file")
@@ -418,11 +594,25 @@ def main() -> int:
             expected_edges=modified[2],
             expected_hash=modified[3],
             timeout=args.timeout,
+            expected_collection_documents=args.expected_corpus_files,
             minimum_mongo_offset=unchanged_offset + 1,
         )
+        modified_global = global_graph_snapshot(driver, args.neo4j_database)
+        require_global_counts(
+            modified_global,
+            report["expected_global_counts"]["modified_nodes"],
+            report["expected_global_counts"]["modified_edges"],
+            "modified replay",
+        )
+        report["global_counts"]["modified_replay"] = modified_global
 
-        node_duplicates, edge_duplicates = duplicate_counts(
-            driver, args.neo4j_database
+        node_duplicates = (
+            modified_global["total_nodes"]
+            - modified_global["distinct_node_ids"]
+        )
+        edge_duplicates = (
+            modified_global["total_edges"]
+            - modified_global["distinct_edge_ids"]
         )
         report["duplicate_node_ids"] = node_duplicates
         report["duplicate_edge_ids"] = edge_duplicates
@@ -434,7 +624,7 @@ def main() -> int:
 
         print("[4/5] Restart Spark and verify its persistent checkpoint")
         report["spark_restart"] = restart_spark_and_verify_checkpoint(
-            args, collection, file_id
+            args, collection
         )
     except Exception as exc:
         report["status"] = "FAIL"
@@ -456,6 +646,7 @@ def main() -> int:
                         expected_edges=original[2],
                         expected_hash=original[3],
                         timeout=args.timeout,
+                        expected_collection_documents=args.expected_corpus_files,
                         minimum_mongo_offset=(
                             report.get("modified_replay", {}).get(
                                 "mongo_kafka_offset"
@@ -468,6 +659,16 @@ def main() -> int:
                             else None
                         ),
                     )
+                    cleanup_global = global_graph_snapshot(
+                        driver, args.neo4j_database
+                    )
+                    require_global_counts(
+                        cleanup_global,
+                        args.expected_corpus_nodes,
+                        args.expected_corpus_edges,
+                        "cleanup",
+                    )
+                    report["global_counts"]["cleanup"] = cleanup_global
                 except Exception as exc:
                     report["status"] = "FAIL"
                     report["cleanup_error"] = str(exc)
@@ -477,6 +678,61 @@ def main() -> int:
 
     if report.get("status") != "FAIL":
         report["status"] = "PASS"
+        report["phase_comparison"] = {
+            "baseline": {
+                "file_nodes": report["first_publish"]["actual_node_count"],
+                "file_edges": report["first_publish"]["actual_edge_count"],
+                "global_nodes": report["global_counts"]["baseline"]["total_nodes"],
+                "global_edges": report["global_counts"]["baseline"]["total_edges"],
+                "mongo_documents": report["first_publish"][
+                    "mongo_collection_documents"
+                ],
+            },
+            "unchanged_replay": {
+                "file_nodes": report["unchanged_replay"]["actual_node_count"],
+                "file_edges": report["unchanged_replay"]["actual_edge_count"],
+                "global_nodes": report["global_counts"]["unchanged_replay"][
+                    "total_nodes"
+                ],
+                "global_edges": report["global_counts"]["unchanged_replay"][
+                    "total_edges"
+                ],
+                "mongo_documents": report["unchanged_replay"][
+                    "mongo_collection_documents"
+                ],
+            },
+            "modified_replay": {
+                "file_nodes": report["modified_replay"]["actual_node_count"],
+                "file_edges": report["modified_replay"]["actual_edge_count"],
+                "global_nodes": report["global_counts"]["modified_replay"][
+                    "total_nodes"
+                ],
+                "global_edges": report["global_counts"]["modified_replay"][
+                    "total_edges"
+                ],
+                "mongo_documents": report["modified_replay"][
+                    "mongo_collection_documents"
+                ],
+            },
+            "restart": {
+                "mongo_documents_before": report["spark_restart"][
+                    "document_count_before"
+                ],
+                "mongo_documents_after": report["spark_restart"][
+                    "document_count_after"
+                ],
+                "snapshots_equal": report["spark_restart"]["snapshots_equal"],
+            },
+            "cleanup": {
+                "file_nodes": report["cleanup_restore"]["actual_node_count"],
+                "file_edges": report["cleanup_restore"]["actual_edge_count"],
+                "global_nodes": report["global_counts"]["cleanup"]["total_nodes"],
+                "global_edges": report["global_counts"]["cleanup"]["total_edges"],
+                "mongo_documents": report["cleanup_restore"][
+                    "mongo_collection_documents"
+                ],
+            },
+        }
         print("[5/5] PASS: exact IDs, MongoDB upsert, and checkpoint verified")
 
     args.json_output.parent.mkdir(parents=True, exist_ok=True)

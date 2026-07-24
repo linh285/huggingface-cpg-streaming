@@ -71,6 +71,8 @@ services:
       - /opt/spark/bin/spark-submit
       - --master
       - local[2]
+      - --driver-memory
+      - 512m
       - --conf
       - spark.jars.ivy=/tmp/.ivy2
       - --packages

@@ -24,6 +24,7 @@ class KafkaEventProducer:
         self.kafka_producer = None
         self._files: dict[str, Any] = {}
         self._pending_futures: list[Any] = []
+        self._max_pending_futures = 1_000
 
         if dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -50,8 +51,12 @@ class KafkaEventProducer:
                 bootstrap_servers=bootstrap_servers,
                 acks="all",
                 retries=5,
-                max_block_ms=15_000,
-                request_timeout_ms=15_000,
+                compression_type="gzip",
+                linger_ms=20,
+                batch_size=131_072,
+                max_block_ms=60_000,
+                request_timeout_ms=60_000,
+                delivery_timeout_ms=600_000,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -84,6 +89,18 @@ class KafkaEventProducer:
         except Exception as exc:
             raise RuntimeError(f"Kafka send failed for {TOPICS[category]}: {exc}") from exc
         self._pending_futures.append(future)
+        if len(self._pending_futures) >= self._max_pending_futures:
+            self._flush_pending()
+
+    def _flush_pending(self) -> None:
+        try:
+            self.kafka_producer.flush(timeout=300)
+            for future in self._pending_futures:
+                future.get(timeout=300)
+        except Exception as exc:
+            raise RuntimeError(f"Kafka delivery failed: {exc}") from exc
+        finally:
+            self._pending_futures.clear()
 
     def flush(self) -> None:
         if self.dry_run:
@@ -91,18 +108,11 @@ class KafkaEventProducer:
                 handle.flush()
             return
 
-        try:
-            self.kafka_producer.flush(timeout=30)
-            for future in self._pending_futures:
-                future.get(timeout=30)
-        except Exception as exc:
-            raise RuntimeError(f"Kafka delivery failed: {exc}") from exc
-        finally:
-            self._pending_futures.clear()
+        self._flush_pending()
 
     def close(self) -> None:
         if self.kafka_producer is not None:
-            self.kafka_producer.close(timeout=30)
+            self.kafka_producer.close(timeout=300)
         for handle in self._files.values():
             if not handle.closed:
                 handle.close()
