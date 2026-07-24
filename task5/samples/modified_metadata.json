@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0.0",
   "event_time": "2026-07-23T10:05:00Z",
-  "event_type": "metadata",
-  "file_id": "task6-demo-file",
+  "event_type": "FILE_METADATA_UPSERT",
+  "file_id": "ef73a9c1b79b71681f6110d07260f0139d34a8c19beccca1dbfc8b34f8bc019c",
   "repository": "huggingface/datasets",
   "path": "src/datasets/task6_demo.py",
   "language": "python",
@@ -10,6 +10,7 @@
   "line_count": 12,
   "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "ast_node_count": 18,
+  "ast_edge_count": 17,
   "cfg_edge_count": 8,
   "dfg_edge_count": 5,
   "call_edge_count": 2,

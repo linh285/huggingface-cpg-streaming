@@ -1,37 +1,40 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/linh285/huggingface-cpg-streaming/task3/schemas/edge-event.schema.json",
-  "title": "CPG Edge Event",
-  "description": "Event emitted to cpg.edges when a CPG edge is upserted or deleted.",
+  "title": "CPG edge change event",
   "type": "object",
   "required": [
     "schema_version",
     "event_type",
     "event_time",
     "repository",
-    "commit_sha",
     "file_id",
-    "file_path",
-    "content_hash",
+    "path",
+    "content_sha256",
     "edge_id",
     "edge_type",
-    "source_node_id",
-    "target_node_id"
+    "source_id",
+    "target_id"
   ],
   "properties": {
-    "schema_version":  { "const": 1 },
-    "event_type":      { "enum": ["EDGE_UPSERT", "EDGE_DELETE"] },
-    "event_time":      { "type": "string", "format": "date-time" },
-    "repository":      { "type": "string", "minLength": 1 },
-    "commit_sha":      { "type": "string", "minLength": 7 },
-    "file_id":         { "type": "string", "minLength": 1 },
-    "file_path":       { "type": "string", "minLength": 1 },
-    "content_hash":    { "type": "string", "minLength": 1 },
-    "edge_id":         { "type": "string", "minLength": 1 },
-    "edge_type":       { "enum": ["AST", "CFG", "DFG", "CALL"] },
-    "source_node_id":  { "type": "string", "minLength": 1 },
-    "target_node_id":  { "type": "string", "minLength": 1 },
-    "properties":      { "type": "object" }
+    "schema_version": { "const": "1.0.0" },
+    "event_type": { "enum": ["EDGE_UPSERT", "EDGE_DELETE"] },
+    "event_time": { "type": "string", "format": "date-time" },
+    "repository": { "type": "string", "minLength": 1 },
+    "file_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1 },
+    "content_sha256": { "type": "string", "pattern": "^([0-9a-f]{64})?$" },
+    "edge_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "edge_type": { "enum": ["AST", "CFG", "DFG", "CALL"] },
+    "source_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "target_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "properties": { "type": "object" }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": { "properties": { "event_type": { "const": "EDGE_UPSERT" } } },
+      "then": { "required": ["properties"] }
+    }
+  ],
+  "additionalProperties": false
 }

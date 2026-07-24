@@ -1,0 +1,82 @@
+{
+  "file": "src/datasets/utils/experimental.py",
+  "file_id": "6c7f76928a88fa4fd8217323002eb245416159a35a66ca6559463976f8d1fc9c",
+  "file_id_stable_across_revisions": true,
+  "original_content_sha256": "6acb052a2ded7705891b4be5a06fba143eb2881e75612fa606bc31fe8ef677b3",
+  "modified_content_sha256": "e360b90ebfe2e1281e55872ae7199d71c72c777a580f5d05c626f565ccc32482",
+  "connectors": {
+    "neo4j-sink-cpg-nodes": {
+      "connector": "RUNNING",
+      "tasks": "RUNNING"
+    },
+    "neo4j-sink-cpg-edges": {
+      "connector": "RUNNING",
+      "tasks": "RUNNING"
+    }
+  },
+  "first_publish": {
+    "expected_node_count": 57,
+    "actual_node_count": 57,
+    "missing_nodes": 0,
+    "stale_nodes": 0,
+    "expected_edge_count": 75,
+    "actual_edge_count": 75,
+    "missing_edges": 0,
+    "stale_edges": 0,
+    "mongo_id_count": 1,
+    "mongo_file_id_count": 1,
+    "mongo_content_sha256": "6acb052a2ded7705891b4be5a06fba143eb2881e75612fa606bc31fe8ef677b3",
+    "mongo_kafka_offset": 8
+  },
+  "unchanged_replay": {
+    "expected_node_count": 57,
+    "actual_node_count": 57,
+    "missing_nodes": 0,
+    "stale_nodes": 0,
+    "expected_edge_count": 75,
+    "actual_edge_count": 75,
+    "missing_edges": 0,
+    "stale_edges": 0,
+    "mongo_id_count": 1,
+    "mongo_file_id_count": 1,
+    "mongo_content_sha256": "6acb052a2ded7705891b4be5a06fba143eb2881e75612fa606bc31fe8ef677b3",
+    "mongo_kafka_offset": 9
+  },
+  "modified_replay": {
+    "expected_node_count": 68,
+    "actual_node_count": 68,
+    "missing_nodes": 0,
+    "stale_nodes": 0,
+    "expected_edge_count": 89,
+    "actual_edge_count": 89,
+    "missing_edges": 0,
+    "stale_edges": 0,
+    "mongo_id_count": 1,
+    "mongo_file_id_count": 1,
+    "mongo_content_sha256": "e360b90ebfe2e1281e55872ae7199d71c72c777a580f5d05c626f565ccc32482",
+    "mongo_kafka_offset": 10
+  },
+  "duplicate_node_ids": 0,
+  "duplicate_edge_ids": 0,
+  "spark_restart": {
+    "offset_before": 10,
+    "offset_after": 10,
+    "checkpoint_files_before": 44,
+    "checkpoint_files_after": 44
+  },
+  "cleanup_restore": {
+    "expected_node_count": 57,
+    "actual_node_count": 57,
+    "missing_nodes": 0,
+    "stale_nodes": 0,
+    "expected_edge_count": 75,
+    "actual_edge_count": 75,
+    "missing_edges": 0,
+    "stale_edges": 0,
+    "mongo_id_count": 1,
+    "mongo_file_id_count": 1,
+    "mongo_content_sha256": "6acb052a2ded7705891b4be5a06fba143eb2881e75612fa606bc31fe8ef677b3",
+    "mongo_kafka_offset": 11
+  },
+  "status": "PASS"
+}

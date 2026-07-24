@@ -1,228 +1,491 @@
 #!/usr/bin/env python3
-"""
-Task 6 - Idempotent Replay Verification (orchestrator).
+"""Run the mandatory Task 6 replay proof against both database sinks."""
 
-End-to-end proof that reprocessing a single Python file through the pipeline
-updates Neo4j (and MongoDB) *in place* without creating duplicates:
-
-  1. Snapshot Neo4j BEFORE  (global + this file's node/edge counts).
-  2. Optionally inject a small edit into the target file (--apply-edit),
-     backing up the original so the repo can be restored.
-  3. Reprocess ONLY that file with the Task 2 Parser Service (single-file mode)
-     into an isolated output dir -- the full Task 2 dump is never clobbered.
-  4. Bridge those events into Kafka via the Task 4 publisher.
-  5. Poll Neo4j until the counts stabilise (sink drained).
-  6. Snapshot AFTER and print the delta + an idempotency verdict.
-
-This deliberately shells out to the existing Task 2 / Task 4 tooling instead of
-re-implementing it, so the replay path is byte-for-byte the same code that runs
-in normal operation.
-
-Usage (from task6/):
-    # pure idempotency: replay an UNCHANGED file -> expect zero delta
-    python replay_single_file.py --file src/datasets/load.py
-
-    # modified file: inject an edit -> expect a small, non-duplicating delta
-    python replay_single_file.py --file src/datasets/load.py --apply-edit
-"""
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
+from typing import Any
+
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parent
-PARSER = REPO_ROOT / "task2" / "parser_service.py"
-BRIDGE = REPO_ROOT / "task4" / "publish_jsonl_to_kafka.py"
-REPLAY_OUT = REPO_ROOT / "artifacts" / "task6" / "replay"
+PROJECT_ROOT = HERE.parent
+TASK2 = PROJECT_ROOT / "task2"
+sys.path.insert(0, str(TASK2))
 
-# A benign, syntactically valid marker appended when --apply-edit is used.
-EDIT_MARKER = "\n\ndef __cpg_replay_marker__(x):\n    # injected by Task 6 replay test\n    return x + 1\n"
-
-
-def sha256_str(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+from cpg_parser import CPGParseResult, parse_python_file  # noqa: E402
+from event_contract import file_id_for  # noqa: E402
 
 
-def compute_file_id(repository: str, rel_path: str) -> str:
-    """Mirror the Parser Service's deterministic file_id derivation."""
-    rel = rel_path.replace("\\", "/")
-    return sha256_str(f"{repository}:{rel}")
+EDIT_MARKER = (
+    "\n\n"
+    "def __cpg_task6_revision_marker__(value):\n"
+    "    \"\"\"Temporary real-file edit used by the Task 6 replay proof.\"\"\"\n"
+    "    return value + 1\n"
+)
 
 
-# --------------------------------------------------------------------------- #
-# Neo4j snapshot helpers
-# --------------------------------------------------------------------------- #
-def neo4j_snapshot(driver, database: str, file_id: str) -> dict:
-    q_global_nodes = "MATCH (n:CPGNode) RETURN count(n) AS v"
-    q_global_edges = "MATCH ()-[r:CPG_EDGE]->() RETURN count(r) AS v"
-    q_dist_nodes = "MATCH (n:CPGNode) RETURN count(DISTINCT n.node_id) AS v"
-    q_dist_edges = "MATCH ()-[r:CPG_EDGE]->() RETURN count(DISTINCT r.edge_id) AS v"
-    q_file_nodes = "MATCH (n:CPGNode {file_id: $fid}) RETURN count(n) AS v"
-    q_file_edges = "MATCH ()-[r:CPG_EDGE {file_id: $fid}]->() RETURN count(r) AS v"
-    with driver.session(database=database) as s:
-        return {
-            "global_nodes": s.run(q_global_nodes).single()["v"],
-            "global_edges": s.run(q_global_edges).single()["v"],
-            "distinct_node_ids": s.run(q_dist_nodes).single()["v"],
-            "distinct_edge_ids": s.run(q_dist_edges).single()["v"],
-            "file_nodes": s.run(q_file_nodes, fid=file_id).single()["v"],
-            "file_edges": s.run(q_file_edges, fid=file_id).single()["v"],
-        }
-
-
-def wait_until_stable(driver, database: str, file_id: str, timeout: int = 90) -> dict:
-    """Poll until two consecutive snapshots match (sink has drained)."""
-    prev = None
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        cur = neo4j_snapshot(driver, database, file_id)
-        if prev is not None and cur == prev:
-            return cur
-        prev = cur
-        time.sleep(3)
-    return prev  # best effort
-
-
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Task 6 idempotent single-file replay.")
-    p.add_argument("--file", required=True, help="Repo-relative path of the .py file to replay.")
-    p.add_argument("--repo-dir", type=Path, default=REPO_ROOT / ".work" / "repos" / "datasets")
-    p.add_argument("--repository-name", default="huggingface/datasets")
-    p.add_argument("--bootstrap", default="localhost:9092")
-    p.add_argument("--uri", default="bolt://localhost:7687")
-    p.add_argument("--user", default="neo4j")
-    p.add_argument("--password", default="cpgpassword")
-    p.add_argument("--database", default="neo4j")
-    p.add_argument("--apply-edit", action="store_true",
-                   help="Inject a marker function into the file (restored afterwards).")
-    p.add_argument("--keep-edit", action="store_true",
-                   help="Do NOT restore the file after the run (leave the edit in place).")
-    return p.parse_args()
+    parser = argparse.ArgumentParser(
+        description="Verify exact-set replay idempotency in Neo4j and MongoDB."
+    )
+    parser.add_argument(
+        "--file",
+        default="src/datasets/utils/experimental.py",
+        help="Real Python file relative to --repo-dir.",
+    )
+    parser.add_argument(
+        "--repo-dir",
+        type=Path,
+        default=PROJECT_ROOT / ".work" / "repos" / "datasets",
+    )
+    parser.add_argument("--repository-name", default="huggingface/datasets")
+    parser.add_argument("--bootstrap", default="localhost:9092")
+    parser.add_argument("--neo4j-uri", default="bolt://localhost:7687")
+    parser.add_argument("--neo4j-user", default="neo4j")
+    parser.add_argument("--neo4j-password", default="cpgpassword")
+    parser.add_argument("--neo4j-database", default="neo4j")
+    parser.add_argument("--mongo-uri", default="mongodb://localhost:27017")
+    parser.add_argument("--mongo-database", default="cpg")
+    parser.add_argument("--mongo-collection", default="source_metadata")
+    parser.add_argument("--connect-url", default="http://localhost:8083")
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=PROJECT_ROOT / ".runtime" / "parser-state",
+    )
+    parser.add_argument(
+        "--compose-file",
+        type=Path,
+        action="append",
+        default=None,
+        help="Compose file; repeat to override the default full-stack set.",
+    )
+    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--restart-wait", type=int, default=20)
+    parser.add_argument(
+        "--json-output",
+        type=Path,
+        default=PROJECT_ROOT / "artifacts" / "task6" / "replay_result.json",
+    )
+    return parser.parse_args()
+
+
+def expected_graph(
+    file_id: str,
+    relative_path: str,
+    content: bytes,
+) -> tuple[CPGParseResult, set[str], set[str], str]:
+    result = parse_python_file(file_id, relative_path, content)
+    if result.error_event is not None:
+        raise RuntimeError(f"Target file does not parse: {result.error_event}")
+    return (
+        result,
+        {node.node_id for node in result.nodes},
+        {edge.edge_id for edge in result.edges},
+        hashlib.sha256(content).hexdigest(),
+    )
+
+
+def run_parser(args: argparse.Namespace, relative_path: str) -> None:
+    command = [
+        sys.executable,
+        str(TASK2 / "parser_service.py"),
+        "--repo-dir",
+        str(args.repo_dir),
+        "--repository-name",
+        args.repository_name,
+        "--single-file",
+        relative_path,
+        "--kafka-bootstrap",
+        args.bootstrap,
+        "--state-dir",
+        str(args.state_dir),
+    ]
+    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+
+
+def connector_states(connect_url: str) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for name in ("neo4j-sink-cpg-nodes", "neo4j-sink-cpg-edges"):
+        try:
+            with urllib.request.urlopen(
+                f"{connect_url}/connectors/{name}/status", timeout=5
+            ) as response:
+                status = json.load(response)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Cannot read Kafka Connect status for {name}: {exc}"
+            ) from exc
+        connector_state = status.get("connector", {}).get("state")
+        tasks = status.get("tasks", [])
+        task_states = [task.get("state") for task in tasks]
+        if connector_state != "RUNNING" or not tasks or any(
+            state != "RUNNING" for state in task_states
+        ):
+            raise RuntimeError(f"Connector is not RUNNING: {name}: {status}")
+        result[name] = {
+            "connector": connector_state,
+            "tasks": ",".join(task_states),
+        }
+    return result
+
+
+def neo4j_ids(driver: Any, database: str, file_id: str) -> tuple[set[str], set[str]]:
+    with driver.session(database=database) as session:
+        node_ids = {
+            record["id"]
+            for record in session.run(
+                "MATCH (n:CPGNode {file_id: $file_id}) "
+                "RETURN n.node_id AS id",
+                file_id=file_id,
+            )
+        }
+        edge_ids = {
+            record["id"]
+            for record in session.run(
+                "MATCH ()-[r:CPG_EDGE {file_id: $file_id}]->() "
+                "RETURN r.edge_id AS id",
+                file_id=file_id,
+            )
+        }
+    return node_ids, edge_ids
+
+
+def duplicate_counts(driver: Any, database: str) -> tuple[int, int]:
+    with driver.session(database=database) as session:
+        node_duplicates = session.run(
+            "MATCH (n:CPGNode) WITH n.node_id AS id, count(*) AS count "
+            "WHERE count > 1 RETURN coalesce(sum(count - 1), 0) AS value"
+        ).single()["value"]
+        edge_duplicates = session.run(
+            "MATCH ()-[r:CPG_EDGE]->() "
+            "WITH r.edge_id AS id, count(*) AS count "
+            "WHERE count > 1 RETURN coalesce(sum(count - 1), 0) AS value"
+        ).single()["value"]
+    return int(node_duplicates), int(edge_duplicates)
+
+
+def mongo_document(
+    collection: Any,
+    file_id: str,
+) -> tuple[int, int, dict[str, Any] | None]:
+    by_id = collection.count_documents({"_id": file_id})
+    by_file_id = collection.count_documents({"file_id": file_id})
+    return by_id, by_file_id, collection.find_one({"_id": file_id})
+
+
+def wait_for_exact_state(
+    *,
+    driver: Any,
+    database: str,
+    collection: Any,
+    file_id: str,
+    expected_nodes: set[str],
+    expected_edges: set[str],
+    expected_hash: str,
+    timeout: int,
+    minimum_mongo_offset: int | None = None,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        actual_nodes, actual_edges = neo4j_ids(driver, database, file_id)
+        mongo_id_count, mongo_file_count, document = mongo_document(
+            collection, file_id
+        )
+        actual_hash = document.get("content_sha256") if document else None
+        mongo_offset = document.get("kafka_offset") if document else None
+        last = {
+            "expected_node_count": len(expected_nodes),
+            "actual_node_count": len(actual_nodes),
+            "missing_nodes": len(expected_nodes - actual_nodes),
+            "stale_nodes": len(actual_nodes - expected_nodes),
+            "expected_edge_count": len(expected_edges),
+            "actual_edge_count": len(actual_edges),
+            "missing_edges": len(expected_edges - actual_edges),
+            "stale_edges": len(actual_edges - expected_edges),
+            "mongo_id_count": mongo_id_count,
+            "mongo_file_id_count": mongo_file_count,
+            "mongo_content_sha256": actual_hash,
+            "mongo_kafka_offset": mongo_offset,
+        }
+        if (
+            actual_nodes == expected_nodes
+            and actual_edges == expected_edges
+            and mongo_id_count == 1
+            and mongo_file_count == 1
+            and actual_hash == expected_hash
+            and isinstance(mongo_offset, int)
+            and (
+                minimum_mongo_offset is None
+                or mongo_offset >= minimum_mongo_offset
+            )
+        ):
+            return last
+        time.sleep(2)
+    raise RuntimeError(
+        "Timed out waiting for exact Neo4j ID sets and one matching MongoDB "
+        f"document: {last}"
+    )
+
+
+def compose_command(args: argparse.Namespace, *parts: str) -> list[str]:
+    files = args.compose_file or [
+        PROJECT_ROOT / "compose.yml",
+        PROJECT_ROOT / "task4" / "docker-compose.yml",
+        PROJECT_ROOT / "task5" / "docker-compose.yml",
+    ]
+    command = ["docker", "compose"]
+    for file in files:
+        command.extend(["-f", str(file)])
+    command.extend(parts)
+    return command
+
+
+def checkpoint_file_count(args: argparse.Namespace) -> int:
+    result = subprocess.run(
+        compose_command(
+            args,
+            "exec",
+            "-T",
+            "metadata-stream",
+            "sh",
+            "-c",
+            "find /opt/spark-checkpoints/cpg-metadata -type f | wc -l",
+        ),
+        cwd=PROJECT_ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return int(result.stdout.strip())
+
+
+def restart_spark_and_verify_checkpoint(
+    args: argparse.Namespace,
+    collection: Any,
+    file_id: str,
+) -> dict[str, Any]:
+    before = collection.find_one({"_id": file_id})
+    if before is None:
+        raise RuntimeError("MongoDB document disappeared before Spark restart")
+    offset_before = before.get("kafka_offset")
+    processed_before = before.get("processed_at")
+    files_before = checkpoint_file_count(args)
+    if files_before <= 0:
+        raise RuntimeError("Spark checkpoint directory contains no files")
+
+    subprocess.run(
+        compose_command(args, "restart", "metadata-stream"),
+        cwd=PROJECT_ROOT,
+        check=True,
+    )
+    time.sleep(args.restart_wait)
+
+    after = collection.find_one({"_id": file_id})
+    if after is None:
+        raise RuntimeError("MongoDB document disappeared after Spark restart")
+    files_after = checkpoint_file_count(args)
+    if after.get("kafka_offset") != offset_before:
+        raise RuntimeError(
+            "Spark replayed an already committed Kafka offset after restart: "
+            f"{offset_before} -> {after.get('kafka_offset')}"
+        )
+    if after.get("processed_at") != processed_before:
+        raise RuntimeError(
+            "MongoDB document was rewritten without a new Kafka event after "
+            "Spark restart"
+        )
+    return {
+        "offset_before": offset_before,
+        "offset_after": after.get("kafka_offset"),
+        "checkpoint_files_before": files_before,
+        "checkpoint_files_after": files_after,
+    }
 
 
 def main() -> int:
     args = parse_args()
-    rel_path = args.file.replace("\\", "/")
-    abs_path = (args.repo_dir / rel_path).resolve()
-    file_id = compute_file_id(args.repository_name, rel_path)
-
-    if not abs_path.exists():
-        print(f"[ERROR] Target file not found: {abs_path}", file=sys.stderr)
-        return 1
+    args.repo_dir = args.repo_dir.resolve()
+    relative_path = args.file.replace("\\", "/")
+    absolute_path = (args.repo_dir / relative_path).resolve()
+    try:
+        absolute_path.relative_to(args.repo_dir)
+    except ValueError:
+        print("[FAIL] --file escapes --repo-dir", file=sys.stderr)
+        return 2
+    if not absolute_path.is_file():
+        print(f"[FAIL] Target file not found: {absolute_path}", file=sys.stderr)
+        return 2
 
     try:
         from neo4j import GraphDatabase
+        from pymongo import MongoClient
     except ImportError:
-        print("[ERROR] neo4j driver required: pip install neo4j", file=sys.stderr)
-        return 1
+        print(
+            "[FAIL] Task 6 requires neo4j and pymongo: "
+            "python -m pip install -r task4/requirements.txt",
+            file=sys.stderr,
+        )
+        return 2
 
-    driver = GraphDatabase.driver(args.uri, auth=(args.user, args.password))
+    file_id = file_id_for(args.repository_name, relative_path)
+    original_bytes = absolute_path.read_bytes()
+    original = expected_graph(file_id, relative_path, original_bytes)
+    modified_bytes = original_bytes + EDIT_MARKER.encode("utf-8")
+    modified = expected_graph(file_id, relative_path, modified_bytes)
+    if original[3] == modified[3]:
+        print("[FAIL] Modified revision has the same hash", file=sys.stderr)
+        return 2
+
+    driver = GraphDatabase.driver(
+        args.neo4j_uri,
+        auth=(args.neo4j_user, args.neo4j_password),
+    )
+    mongo = MongoClient(args.mongo_uri, serverSelectionTimeoutMS=5000)
+    collection = mongo[args.mongo_database][args.mongo_collection]
+    modified_on_disk = False
+    baseline_published = False
+    report: dict[str, Any] = {
+        "file": relative_path,
+        "file_id": file_id,
+        "file_id_stable_across_revisions": True,
+        "original_content_sha256": original[3],
+        "modified_content_sha256": modified[3],
+    }
+
     try:
         driver.verify_connectivity()
+        mongo.admin.command("ping")
+        report["connectors"] = connector_states(args.connect_url)
+        prior_document = collection.find_one({"_id": file_id})
+        prior_offset = (
+            prior_document.get("kafka_offset")
+            if prior_document is not None
+            else None
+        )
+
+        print("[1/5] Publish the real file for the first time")
+        run_parser(args, relative_path)
+        baseline_published = True
+        report["first_publish"] = wait_for_exact_state(
+            driver=driver,
+            database=args.neo4j_database,
+            collection=collection,
+            file_id=file_id,
+            expected_nodes=original[1],
+            expected_edges=original[2],
+            expected_hash=original[3],
+            timeout=args.timeout,
+            minimum_mongo_offset=(
+                prior_offset + 1 if prior_offset is not None else None
+            ),
+        )
+        first_offset = report["first_publish"]["mongo_kafka_offset"]
+
+        print("[2/5] Replay the unchanged file and same revision")
+        run_parser(args, relative_path)
+        report["unchanged_replay"] = wait_for_exact_state(
+            driver=driver,
+            database=args.neo4j_database,
+            collection=collection,
+            file_id=file_id,
+            expected_nodes=original[1],
+            expected_edges=original[2],
+            expected_hash=original[3],
+            timeout=args.timeout,
+            minimum_mongo_offset=first_offset + 1,
+        )
+        unchanged_offset = report["unchanged_replay"]["mongo_kafka_offset"]
+
+        print("[3/5] Publish a modified revision of the same real file")
+        absolute_path.write_bytes(modified_bytes)
+        modified_on_disk = True
+        run_parser(args, relative_path)
+        report["modified_replay"] = wait_for_exact_state(
+            driver=driver,
+            database=args.neo4j_database,
+            collection=collection,
+            file_id=file_id,
+            expected_nodes=modified[1],
+            expected_edges=modified[2],
+            expected_hash=modified[3],
+            timeout=args.timeout,
+            minimum_mongo_offset=unchanged_offset + 1,
+        )
+
+        node_duplicates, edge_duplicates = duplicate_counts(
+            driver, args.neo4j_database
+        )
+        report["duplicate_node_ids"] = node_duplicates
+        report["duplicate_edge_ids"] = edge_duplicates
+        if node_duplicates or edge_duplicates:
+            raise RuntimeError(
+                f"Duplicate IDs found: nodes={node_duplicates}, "
+                f"edges={edge_duplicates}"
+            )
+
+        print("[4/5] Restart Spark and verify its persistent checkpoint")
+        report["spark_restart"] = restart_spark_and_verify_checkpoint(
+            args, collection, file_id
+        )
     except Exception as exc:
-        print(f"[ERROR] Cannot connect to Neo4j at {args.uri}: {exc}", file=sys.stderr)
-        return 1
-
-    print("=" * 66)
-    print("  TASK 6 - IDEMPOTENT REPLAY VERIFICATION")
-    print("=" * 66)
-    print(f"File        : {rel_path}")
-    print(f"file_id     : {file_id}")
-    print(f"Mode        : {'MODIFIED (edit injected)' if args.apply_edit else 'UNCHANGED (pure replay)'}")
-    print("-" * 66)
-
-    # --- 1. snapshot BEFORE ---
-    before = neo4j_snapshot(driver, args.database, file_id)
-    print(f"[BEFORE] global nodes={before['global_nodes']} edges={before['global_edges']} "
-          f"| file nodes={before['file_nodes']} edges={before['file_edges']}")
-
-    # --- 2. optional edit (with backup) ---
-    backup = abs_path.with_suffix(abs_path.suffix + ".task6.bak")
-    original_bytes = abs_path.read_bytes()
-    if args.apply_edit:
-        backup.write_bytes(original_bytes)
-        with abs_path.open("a", encoding="utf-8") as f:
-            f.write(EDIT_MARKER)
-        print(f"[edit] Appended marker function; backup at {backup.name}")
-
-    try:
-        # --- 3. reprocess ONLY this file (isolated output dir) ---
-        REPLAY_OUT.mkdir(parents=True, exist_ok=True)
-        print(f"[parse] Reprocessing single file -> {REPLAY_OUT}")
-        subprocess.run(
-            [sys.executable, str(PARSER),
-             "--repo-dir", str(args.repo_dir),
-             "--repository-name", args.repository_name,
-             "--single-file", rel_path,
-             "--output-dir", str(REPLAY_OUT),
-             "--dry-run"],
-            check=True, cwd=str(REPO_ROOT / "task2"),
-        )
-
-        # --- 4. bridge the replayed events into Kafka ---
-        print("[publish] Bridging replayed events -> Kafka")
-        subprocess.run(
-            [sys.executable, str(BRIDGE),
-             "--bootstrap", args.bootstrap,
-             "--input-dir", str(REPLAY_OUT),
-             "--topics", "nodes,edges,metadata"],
-            check=True,
-        )
+        report["status"] = "FAIL"
+        report["error"] = str(exc)
+        print(f"[FAIL] {exc}", file=sys.stderr)
     finally:
-        # --- restore the file unless asked to keep the edit ---
-        if args.apply_edit and not args.keep_edit:
-            abs_path.write_bytes(original_bytes)
-            if backup.exists():
-                backup.unlink()
-            print("[edit] Restored original file.")
+        if modified_on_disk:
+            absolute_path.write_bytes(original_bytes)
+            print("[cleanup] Restored the real source file")
+            if baseline_published:
+                try:
+                    run_parser(args, relative_path)
+                    report["cleanup_restore"] = wait_for_exact_state(
+                        driver=driver,
+                        database=args.neo4j_database,
+                        collection=collection,
+                        file_id=file_id,
+                        expected_nodes=original[1],
+                        expected_edges=original[2],
+                        expected_hash=original[3],
+                        timeout=args.timeout,
+                        minimum_mongo_offset=(
+                            report.get("modified_replay", {}).get(
+                                "mongo_kafka_offset"
+                            )
+                            + 1
+                            if report.get("modified_replay", {}).get(
+                                "mongo_kafka_offset"
+                            )
+                            is not None
+                            else None
+                        ),
+                    )
+                except Exception as exc:
+                    report["status"] = "FAIL"
+                    report["cleanup_error"] = str(exc)
+                    print(f"[FAIL] Cleanup replay failed: {exc}", file=sys.stderr)
+        driver.close()
+        mongo.close()
 
-    # --- 5. wait for sink to drain ---
-    print("[wait] Waiting for Neo4j sink to drain...")
-    after = wait_until_stable(driver, args.database, file_id)
-    print(f"[AFTER ] global nodes={after['global_nodes']} edges={after['global_edges']} "
-          f"| file nodes={after['file_nodes']} edges={after['file_edges']}")
-    driver.close()
+    if report.get("status") != "FAIL":
+        report["status"] = "PASS"
+        print("[5/5] PASS: exact IDs, MongoDB upsert, and checkpoint verified")
 
-    # --- 6. verdict ---
-    d_global_nodes = after["global_nodes"] - before["global_nodes"]
-    d_global_edges = after["global_edges"] - before["global_edges"]
-    d_file_nodes = after["file_nodes"] - before["file_nodes"]
-    d_file_edges = after["file_edges"] - before["file_edges"]
-    node_dupes = after["global_nodes"] - after["distinct_node_ids"]
-    edge_dupes = after["global_edges"] - after["distinct_edge_ids"]
-
-    print("-" * 66)
-    print(f"Δ global nodes : {d_global_nodes:+}")
-    print(f"Δ global edges : {d_global_edges:+}")
-    print(f"Δ file   nodes : {d_file_nodes:+}")
-    print(f"Δ file   edges : {d_file_edges:+}")
-    print(f"Duplicate node_ids in graph : {node_dupes}")
-    print(f"Duplicate edge_ids in graph : {edge_dupes}")
-    print("-" * 66)
-
-    no_dupes = (node_dupes == 0 and edge_dupes == 0)
-    if not args.apply_edit:
-        # Unchanged replay: MERGE must be a no-op -> zero delta everywhere.
-        ok = no_dupes and d_global_nodes == 0 and d_global_edges == 0
-        verdict = ("PASS -- unchanged replay produced ZERO new nodes/edges and no duplicates"
-                   if ok else "FAIL -- unchanged replay changed the graph or duplicated data")
-    else:
-        # Modified replay: graph must change, but never duplicate.
-        ok = no_dupes
-        verdict = ("PASS -- graph updated in place (delta reflects the edit) with no duplicates"
-                   if ok else "FAIL -- duplicates detected after modified replay")
-
-    print(f"VERDICT: {verdict}")
-    print("=" * 66)
-    return 0 if ok else 2
+    args.json_output.parent.mkdir(parents=True, exist_ok=True)
+    args.json_output.write_text(
+        json.dumps(report, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(report, indent=2, default=str))
+    return 0 if report["status"] == "PASS" else 2
 
 
 if __name__ == "__main__":

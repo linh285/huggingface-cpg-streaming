@@ -1,0 +1,56 @@
+{
+    "status":  "PASS",
+    "counts":  {
+                   "total_nodes":  57,
+                   "total_edges":  75,
+                   "distinct_node_ids":  57,
+                   "distinct_edge_ids":  75,
+                   "placeholder_nodes":  0
+               },
+    "node_breakdown":  {
+                           "Load":  14,
+                           "Name":  11,
+                           "Constant":  4,
+                           "Expr":  3,
+                           "alias":  3,
+                           "arg":  3,
+                           "Call":  3,
+                           "arguments":  2,
+                           "ImportFrom":  2,
+                           "FunctionDef":  2,
+                           "Attribute":  2,
+                           "Return":  2,
+                           "Module":  1,
+                           "Import":  1,
+                           "JoinedStr":  1,
+                           "FormattedValue":  1,
+                           "Starred":  1,
+                           "keyword":  1
+                       },
+    "edge_breakdown":  {
+                           "AST":  56,
+                           "DFG":  9,
+                           "CFG":  7,
+                           "CALL":  3
+                       },
+    "duplicate_node_ids":  [
+
+                           ],
+    "duplicate_edge_ids":  [
+
+                           ],
+    "connectors":  {
+                       "neo4j-sink-cpg-nodes":  {
+                                                    "connector":  "RUNNING",
+                                                    "tasks":  [
+                                                                  "RUNNING"
+                                                              ]
+                                                },
+                       "neo4j-sink-cpg-edges":  {
+                                                    "connector":  "RUNNING",
+                                                    "tasks":  [
+                                                                  "RUNNING"
+                                                              ]
+                                                }
+                   }
+}

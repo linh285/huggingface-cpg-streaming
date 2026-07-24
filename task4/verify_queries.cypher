@@ -11,7 +11,7 @@ MATCH (n:CPGNode)
 RETURN coalesce(n.node_type, '<placeholder>') AS node_type, count(*) AS c
 ORDER BY c DESC;
 
-// 3. Edge breakdown by category (AST / CFG / DFG / CALLS) -------------------
+// 3. Edge breakdown by category (AST / CFG / DFG / CALL) --------------------
 MATCH ()-[r:CPG_EDGE]->()
 RETURN r.edge_type AS edge_type, count(*) AS c
 ORDER BY c DESC;

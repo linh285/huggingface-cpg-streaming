@@ -20,7 +20,6 @@ services:
   neo4j:
     image: neo4j:5.20-community
     hostname: neo4j
-    container_name: cpg-neo4j
     ports:
       - "7474:7474" # HTTP Browser UI
       - "7687:7687" # Bolt protocol
@@ -40,16 +39,32 @@ services:
       - neo4j-logs:/logs
     restart: unless-stopped
 
+  neo4j-init:
+    image: neo4j:5.20-community
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - >-
+        cypher-shell -a bolt://neo4j:7687 -u neo4j -p cpgpassword
+        -f /init/init.cypher
+    volumes:
+      - ./task4/neo4j/init.cypher:/init/init.cypher:ro
+    restart: "no"
+
   # ---------------------------------------------------------------------------
   # Kafka Connect worker with the Neo4j Sink connector plugin
   # ---------------------------------------------------------------------------
   kafka-connect:
     image: confluentinc/cp-kafka-connect:7.8.0
     hostname: kafka-connect
-    container_name: cpg-kafka-connect
+    user: "0:0"
     depends_on:
-      neo4j:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      neo4j-init:
+        condition: service_completed_successfully
     ports:
       - "8083:8083" # Connect REST API
     environment:
@@ -68,16 +83,23 @@ services:
       CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
       CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
-      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
-    # Install the Neo4j Sink plugin on first boot, then start the worker.
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/tmp/connect-plugins"
+    # Cache the official self-contained Neo4j connector JAR in a named volume.
     command:
       - bash
       - -c
       - |
-        echo "[connect] Installing Neo4j Kafka Connector plugin..."
-        confluent-hub install --no-prompt neo4j/neo4j-kafka-connector:5.1.0
+        set -e
+        if [ ! -s /tmp/connect-plugins/neo4j-kafka-connect-5.5.0.jar ]; then
+          echo "[connect] Downloading Neo4j Kafka Connector 5.5.0..."
+          curl --fail --location --retry 5 \
+            --output /tmp/connect-plugins/neo4j-kafka-connect-5.5.0.jar \
+            https://github.com/neo4j/neo4j-kafka-connector/releases/download/5.5.0/neo4j-kafka-connect-5.5.0.jar
+        fi
         echo "[connect] Starting Kafka Connect worker..."
-        /etc/confluent/docker/run
+        exec /etc/confluent/docker/run
+    volumes:
+      - neo4j-connect-plugin:/tmp/connect-plugins
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
       interval: 15s
@@ -88,3 +110,4 @@ services:
 volumes:
   neo4j-data:
   neo4j-logs:
+  neo4j-connect-plugin:

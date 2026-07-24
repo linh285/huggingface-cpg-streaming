@@ -1,47 +1,43 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/linh285/huggingface-cpg-streaming/task3/schemas/metadata-event.schema.json",
-  "title": "Source Metadata Event",
-  "description": "Event emitted to cpg.metadata after a file is fully parsed.",
+  "title": "Source metadata upsert event",
   "type": "object",
   "required": [
     "schema_version",
     "event_type",
     "event_time",
     "repository",
-    "commit_sha",
     "file_id",
-    "file_path",
-    "content_hash",
+    "path",
+    "content_sha256",
     "language",
     "size_bytes",
     "line_count",
-    "parse_status"
+    "ast_node_count",
+    "ast_edge_count",
+    "cfg_edge_count",
+    "dfg_edge_count",
+    "call_edge_count",
+    "status"
   ],
   "properties": {
-    "schema_version":     { "const": 1 },
-    "event_type":         { "const": "FILE_METADATA_UPSERT" },
-    "event_time":         { "type": "string", "format": "date-time" },
-    "repository":         { "type": "string", "minLength": 1 },
-    "commit_sha":         { "type": "string", "minLength": 7 },
-    "file_id":            { "type": "string", "minLength": 1 },
-    "file_path":          { "type": "string", "minLength": 1 },
-    "content_hash":       { "type": "string", "minLength": 1 },
-    "language":           { "const": "python" },
-    "size_bytes":         { "type": "integer", "minimum": 0 },
-    "line_count":         { "type": "integer", "minimum": 0 },
-    "parse_status":       { "enum": ["SUCCESS", "PARTIAL", "FAILED"] },
-    "node_count":         { "type": "integer", "minimum": 0 },
-    "edge_count":         {
-      "type": "object",
-      "properties": {
-        "AST":  { "type": "integer", "minimum": 0 },
-        "CFG":  { "type": "integer", "minimum": 0 },
-        "DFG":  { "type": "integer", "minimum": 0 },
-        "CALL": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "parser_duration_ms": { "type": "integer", "minimum": 0 }
+    "schema_version": { "const": "1.0.0" },
+    "event_type": { "const": "FILE_METADATA_UPSERT" },
+    "event_time": { "type": "string", "format": "date-time" },
+    "repository": { "type": "string", "minLength": 1 },
+    "file_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1 },
+    "content_sha256": { "type": "string", "pattern": "^([0-9a-f]{64})?$" },
+    "language": { "const": "python" },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "line_count": { "type": "integer", "minimum": 0 },
+    "ast_node_count": { "type": "integer", "minimum": 0 },
+    "ast_edge_count": { "type": "integer", "minimum": 0 },
+    "cfg_edge_count": { "type": "integer", "minimum": 0 },
+    "dfg_edge_count": { "type": "integer", "minimum": 0 },
+    "call_edge_count": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["PARSED", "FAILED"] }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

@@ -1,0 +1,22 @@
+title: Big Data Lab 04 — Incremental CPG Streaming
+author: Nhóm huggingface-cpg-streaming
+copyright: "2026"
+only_build_toc_files: true
+
+execute:
+  execute_notebooks: "off"
+
+repository:
+  url: https://github.com/linh285/huggingface-cpg-streaming
+  branch: fix/lab04-final-integration
+  path_to_book: book
+
+html:
+  use_repository_button: true
+  use_issues_button: true
+  home_page_in_navbar: true
+
+sphinx:
+  config:
+    html_show_copyright: false
+    nb_execution_show_tb: true

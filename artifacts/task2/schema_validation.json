@@ -1,0 +1,12 @@
+{
+    "status":  "PASS",
+    "command":  "python -m unittest tests.test_event_contract -v",
+    "source":  "Task 2 publish_success, replay DELETE, and publish_failure events",
+    "schemas":  [
+                    "node-event.schema.json",
+                    "edge-event.schema.json",
+                    "metadata-event.schema.json",
+                    "error-event.schema.json"
+                ],
+    "tests":  2
+}

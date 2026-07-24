@@ -1,75 +1,71 @@
-# Kafka Topic Contract
+# Kafka Event Contract 1.0.0
 
-> **Version:** 1.0.0 · **Date:** 2026-07-23 · **Project:** linh285/huggingface-cpg-streaming
+Nguồn chuẩn của tên topic, event type và trường dùng chung là
+[`task2/event_contract.py`](../task2/event_contract.py). JSON Schema Draft
+2020-12 nằm trong [`schemas/`](schemas/).
 
-## Topic Design
+## Topic layout
 
-| Topic | Record key | Cleanup policy | Consumer |
+| Topic | Record key | Cleanup | Consumer |
 |---|---|---|---|
-| `cpg.nodes` | `node_id` | `compact` | Neo4j Sink Connector |
-| `cpg.edges` | `edge_id` | `compact` | Neo4j Sink Connector |
-| `cpg.metadata` | `file_id` | `compact` | Spark Streaming → MongoDB |
-| `cpg.errors` | `error_id` | `delete` (retention 7 days) | Debug / Monitoring |
+| `cpg.nodes` | `node_id` | `compact` | Neo4j node sink |
+| `cpg.edges` | `edge_id` | `compact` | Neo4j edge sink |
+| `cpg.metadata` | `file_id` | `compact` | Spark → MongoDB |
+| `cpg.errors` | `error_id` | `delete`, retention 7 ngày | debug/monitoring |
 
-## Event Types
+Môi trường lab dùng một partition và replication factor 1 cho mỗi topic.
 
-| Topic | Allowed `event_type` values |
-|---|---|
-| `cpg.nodes` | `NODE_UPSERT`, `NODE_DELETE` |
-| `cpg.edges` | `EDGE_UPSERT`, `EDGE_DELETE` |
-| `cpg.metadata` | `FILE_METADATA_UPSERT` |
-| `cpg.errors` | `PARSER_ERROR` |
+## Trường chung
 
-## Common Fields (all events)
+Tất cả event đều có:
 
-| Field | Type | Source | Description |
-|---|---|---|---|
-| `schema_version` | `integer` | Task 3 | Schema version, starts at `1` |
-| `event_type` | `string` | Task 2 | One of the event types above |
-| `event_time` | `date-time` (ISO-8601 UTC) | Task 2 | When the event was emitted |
-| `repository` | `string` | Task 1 | `huggingface/datasets` |
-| `commit_sha` | `string` (≥7 chars) | Task 1 | Git commit snapshot |
-| `file_id` | `string` | Task 1 | Stable SHA-256 based file identifier |
-| `file_path` | `string` | Task 1 | Relative path within repository |
-| `content_hash` | `string` | Task 1 | SHA-256 of file content |
-
-## ID Ownership
-
-| ID | Created by | Requirement |
+| Trường | Kiểu | Ý nghĩa |
 |---|---|---|
-| `file_id` | Task 1 | Task 2 preserves unchanged |
-| `node_id` | Task 2 | Stable; derived from file path + node type + location |
-| `edge_id` | Task 2 | Stable; derived from source/target/type |
-| `error_id` | Task 2 | Hash of file/stage/error type/position |
+| `schema_version` | string, hằng `"1.0.0"` | version contract |
+| `event_type` | string | loại thao tác |
+| `event_time` | ISO-8601 UTC string | thời điểm phát |
+| `repository` | string | `huggingface/datasets` |
+| `file_id` | 64-char SHA-256 | hash của `repository:path` |
+| `path` | string | đường dẫn POSIX tương đối |
+| `content_sha256` | 64-char SHA-256 | revision nội dung |
 
-## Edge Types
+Không dùng các tên cũ `file_path`, `content_hash`, `source_node_id`,
+`target_node_id` hoặc `CALLS`.
 
-`edge_type` is restricted to: **`AST`**, **`CFG`**, **`DFG`**, **`CALL`**
+## Event theo topic
 
-## Partition & Replication
+### `cpg.nodes`
 
-- **Partitions:** `1` (ordered delivery, easy lab debugging)
-- **Replication factor:** `1` (single-broker cluster)
+- `NODE_UPSERT`: thêm `node_id`, `structural_path`, `node_type`, `label`,
+  vị trí, `code`, `properties`.
+- `NODE_DELETE`: chỉ cần `node_id` ngoài trường chung.
 
-## Idempotency Rules
+### `cpg.edges`
 
-### Task 4 – Neo4j
-- **Nodes:** `MERGE (n:CPGNode {node_id: event.node_id}) SET n += event`
-- **Edges:** `MATCH (src:CPGNode {node_id: event.source_node_id}), (dst:CPGNode {node_id: event.target_node_id}) MERGE (src)-[r:EDGE {edge_id: event.edge_id, edge_type: event.edge_type}]->(dst)`
+- `EDGE_UPSERT`: thêm `edge_id`, `edge_type`, `source_id`, `target_id`,
+  `properties`.
+- `EDGE_DELETE`: thêm `edge_id`, `edge_type`, `source_id`, `target_id`.
+- `edge_type` là một trong `AST`, `CFG`, `DFG`, `CALL`.
 
-### Task 5 – MongoDB
-- **Collection:** `source_metadata`
-- **Upsert key:** `file_id`
+### `cpg.metadata`
 
-### Task 6 – Replay
-Running the parser again for the same `(file_id, content_hash)` produces identical `node_id`, `edge_id`, and `error_id` values — Kafka log compaction deduplicates automatically.
+`FILE_METADATA_UPSERT` thêm `language`, `size_bytes`, `line_count`,
+`ast_node_count`, `ast_edge_count`, `cfg_edge_count`, `dfg_edge_count`,
+`call_edge_count`, `status`.
 
-## Handoff Message
+### `cpg.errors`
 
-> Task 3 has finalised `cpg.nodes`, `cpg.edges`, `cpg.metadata`, and `cpg.errors`.  
-> The full contract is in `task3/TOPIC_CONTRACT.md`.  
-> Task 2 keeps `file_id` from Task 1 and uses stable `node_id` / `edge_id` as Kafka record keys.
+`PARSER_ERROR` thêm `error_id`, `error_type`, `error_message`, `lineno`,
+`col_offset`.
 
----
+## Quy tắc idempotency
 
-*References: Apache Kafka 4.3 · JSON Schema Draft 2020-12 · Lab 04 – Spark Streaming*
+- `file_id` chỉ phụ thuộc repository + path nên giữ nguyên qua revision.
+- `node_id` dùng file ID + structural path + node type.
+- `edge_id` dùng file ID + type + endpoint IDs + properties.
+- Parser lưu state revision trước và phát DELETE trước UPSERT để dọn phần stale.
+- Neo4j `MERGE` theo ID; MongoDB replace/upsert với `_id=file_id`.
+- Kafka compaction giảm bản ghi cũ về lâu dài nhưng không thay thế idempotency ở
+  sink.
+
+Sample trong [`samples/`](samples/) phải validate được bằng schema cùng tên.

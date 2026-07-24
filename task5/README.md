@@ -37,6 +37,15 @@ task5/test_metadata_contract.py       Test hợp đồng dữ liệu
 
 Yêu cầu: Docker Desktop đang chạy.
 
+Linked stack dùng chung Kafka của Task 3:
+
+```bash
+docker compose -f compose.yml -f task4/docker-compose.yml \
+  -f task5/docker-compose.yml up -d
+```
+
+Standalone Task 5:
+
 ```bash
 docker compose -f docker-compose.task5.yml up -d
 ```
@@ -123,6 +132,14 @@ Kết quả cuối phải có:
 MongoDB document count : 1
 Kafka offset unchanged : ...
 Checkpoint files       : ...
+```
+
+Mongo Express chỉ dùng để xem/chụp bằng chứng và không thuộc đường chạy mặc
+định. Với linked stack, bật khi cần:
+
+```bash
+docker compose -f compose.yml -f task4/docker-compose.yml \
+  -f task5/docker-compose.yml --profile ui up -d mongo-express
 ```
 
 ### 4.2. Bài kiểm tra chính thức bằng file Python thật

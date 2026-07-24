@@ -229,3 +229,8 @@ venv/
 
 # Large JSONL event dumps
 artifacts/**/*.jsonl
+
+# Local runtime state and generated documentation output
+.runtime/
+tmp/
+book/_build/

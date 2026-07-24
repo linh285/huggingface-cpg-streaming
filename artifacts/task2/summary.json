@@ -3,15 +3,18 @@
   "total_files_targeted": 147,
   "processed_files": 147,
   "error_files": 0,
-  "total_nodes_emitted": 135287,
-  "total_edges_emitted": 302897,
+  "total_nodes_emitted": 208003,
+  "total_edges_emitted": 267695,
+  "deleted_nodes_emitted": 0,
+  "deleted_edges_emitted": 0,
   "cpg_breakdown": {
-    "ast_nodes": 135287,
-    "cfg_edges": 16197,
-    "dfg_edges": 67331,
-    "call_edges": 11734
+    "ast_nodes": 208003,
+    "ast_edges": 207856,
+    "cfg_edges": 18549,
+    "dfg_edges": 29557,
+    "call_edges": 11733
   },
-  "execution_duration_sec": 6.731,
-  "executed_at": "2026-07-23T08:04:31.105798+00:00",
-  "dry_run": true
+  "dry_run": true,
+  "execution_duration_sec": 326.198,
+  "executed_at": "2026-07-24T02:36:15.472529+00:00"
 }

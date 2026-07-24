@@ -1,85 +1,43 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/linh285/huggingface-cpg-streaming/task5/metadata_event.schema.json",
-  "title": "CPG source metadata event",
+  "title": "Source metadata upsert event",
   "type": "object",
-  "additionalProperties": false,
   "required": [
     "schema_version",
-    "event_time",
     "event_type",
-    "file_id",
+    "event_time",
     "repository",
+    "file_id",
     "path",
+    "content_sha256",
     "language",
     "size_bytes",
     "line_count",
-    "content_sha256",
     "ast_node_count",
+    "ast_edge_count",
     "cfg_edge_count",
     "dfg_edge_count",
     "call_edge_count",
     "status"
   ],
   "properties": {
-    "schema_version": {
-      "const": "1.0.0"
-    },
-    "event_time": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "event_type": {
-      "const": "metadata"
-    },
-    "file_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "repository": {
-      "type": "string",
-      "minLength": 1
-    },
-    "path": {
-      "type": "string",
-      "minLength": 1
-    },
-    "language": {
-      "const": "python"
-    },
-    "size_bytes": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "line_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "content_sha256": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "ast_node_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "cfg_edge_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "dfg_edge_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "call_edge_count": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "status": {
-      "enum": [
-        "PARSED",
-        "FAILED"
-      ]
-    }
-  }
+    "schema_version": { "const": "1.0.0" },
+    "event_type": { "const": "FILE_METADATA_UPSERT" },
+    "event_time": { "type": "string", "format": "date-time" },
+    "repository": { "type": "string", "minLength": 1 },
+    "file_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "path": { "type": "string", "minLength": 1 },
+    "content_sha256": { "type": "string", "pattern": "^([0-9a-f]{64})?$" },
+    "language": { "const": "python" },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "line_count": { "type": "integer", "minimum": 0 },
+    "ast_node_count": { "type": "integer", "minimum": 0 },
+    "ast_edge_count": { "type": "integer", "minimum": 0 },
+    "cfg_edge_count": { "type": "integer", "minimum": 0 },
+    "dfg_edge_count": { "type": "integer", "minimum": 0 },
+    "call_edge_count": { "type": "integer", "minimum": 0 },
+    "status": { "enum": ["PARSED", "FAILED"] }
+  },
+  "additionalProperties": false
 }

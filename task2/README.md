@@ -19,9 +19,12 @@ All nodes, edges, metadata, and error events carry:
 ## Folder Structure
 ```
 task2/
-├── cpg_parser.py        # Core CPG parser engine (AST, CFG, DFG, CALLS)
+├── cpg_parser.py        # Core CPG parser engine (AST, CFG, DFG, CALL)
+├── event_contract.py    # Shared topic/field/event contract
 ├── kafka_producer.py    # Kafka event publisher & dry-run JSONL sink
+├── parser_state.py      # Prior-revision ID state for DELETE events
 ├── parser_service.py    # Service CLI entry point
+├── verify_corpus.py     # Distinct-ID and endpoint verification
 ├── README.md            # Documentation and execution guide
 └── HANDOFF_TASK3.md     # Task 3 Kafka Topic design handoff
 ```
@@ -64,7 +67,11 @@ python task2/parser_service.py \
 ## Output Artifacts
 When executed with `--dry-run`, the service creates the following files in `artifacts/task2/`:
 - `nodes.jsonl`: Emitted CPG Node events.
-- `edges.jsonl`: Emitted CPG Edge events (`AST`, `CFG`, `DFG`, `CALLS`).
+- `edges.jsonl`: Emitted CPG Edge events (`AST`, `CFG`, `DFG`, `CALL`).
 - `metadata.jsonl`: Emitted Source Metadata events.
 - `errors.jsonl`: Emitted Parser Error events.
 - `summary.json`: High-level summary of total files, nodes, edges, and breakdown.
+
+Kafka mode bắt buộc `--kafka-bootstrap`; `--dry-run` không phải mặc định. Parser
+phát `NODE_DELETE`/`EDGE_DELETE` từ state revision trước rồi mới phát UPSERT,
+nhờ vậy file sửa không để node hoặc edge stale ở Neo4j.

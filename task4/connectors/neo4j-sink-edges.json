@@ -4,22 +4,18 @@
     "connector.class": "org.neo4j.connectors.kafka.sink.Neo4jConnector",
     "topics": "cpg.edges",
     "tasks.max": "1",
-
     "key.converter": "org.apache.kafka.connect.storage.StringConverter",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
     "value.converter.schemas.enable": "false",
-
     "neo4j.uri": "bolt://neo4j:7687",
     "neo4j.authentication.type": "BASIC",
     "neo4j.authentication.basic.username": "neo4j",
     "neo4j.authentication.basic.password": "cpgpassword",
     "neo4j.database": "neo4j",
-
-    "errors.tolerance": "all",
+    "errors.tolerance": "none",
     "errors.log.enable": "true",
     "errors.log.include.messages": "true",
-
-    "_comment_strategy": "Endpoints are MERGE-ed (not MATCH-ed) so an edge that arrives before its node events still lands: a bare CPGNode is created and later enriched by the node connector's MERGE on the same node_id. The relationship is MERGE-ed on the deterministic edge_id, so replaying the same edge never duplicates it. coalesce() accepts BOTH the Task 2 field names actually on the wire (source_id/target_id) and the Task 3 TOPIC_CONTRACT aliases (source_node_id/target_node_id). edge_type is kept as a property on a single CPG_EDGE relationship type (Cypher cannot parameterize the relationship type without APOC).",
-    "neo4j.cypher.topic.cpg.edges": "MERGE (src:CPGNode {node_id: coalesce(event.source_id, event.source_node_id)}) MERGE (dst:CPGNode {node_id: coalesce(event.target_id, event.target_node_id)}) MERGE (src)-[r:CPG_EDGE {edge_id: event.edge_id}]->(dst) SET r.edge_type = event.edge_type, r.file_id = event.file_id, r.schema_version = toString(event.schema_version), r.event_time = event.event_time, r.properties_json = apoc.convert.toJson(event.properties)"
+    "_comment_strategy": "EDGE_UPSERT is idempotent by edge_id and creates placeholder endpoints if topic scheduling delivers an edge before its nodes. EDGE_DELETE removes only the identified relationship.",
+    "neo4j.cypher.topic.cpg.edges": "CALL { WITH event WITH event WHERE event.event_type = 'EDGE_DELETE' OPTIONAL MATCH ()-[r:CPG_EDGE {edge_id: event.edge_id}]->() DELETE r RETURN 0 AS action UNION WITH event WITH event WHERE event.event_type = 'EDGE_UPSERT' MERGE (src:CPGNode {node_id: event.source_id}) MERGE (dst:CPGNode {node_id: event.target_id}) MERGE (src)-[r:CPG_EDGE {edge_id: event.edge_id}]->(dst) SET r.edge_type = event.edge_type, r.file_id = event.file_id, r.path = event.path, r.content_sha256 = event.content_sha256, r.schema_version = event.schema_version, r.event_time = event.event_time, r.properties_json = apoc.convert.toJson(event.properties) RETURN 1 AS action } RETURN action"
   }
 }
