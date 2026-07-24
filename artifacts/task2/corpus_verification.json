@@ -1,0 +1,12 @@
+{
+  "node_events": 208003,
+  "distinct_node_ids": 208003,
+  "edge_events": 267695,
+  "distinct_edge_ids": 267695,
+  "metadata_events": 147,
+  "distinct_metadata_file_ids": 147,
+  "error_events": 0,
+  "missing_edge_sources": 0,
+  "missing_edge_targets": 0,
+  "status": "PASS"
+}

@@ -4,7 +4,7 @@ Task 4 - Neo4j ingestion verification.
 
 Connects to Neo4j and reports the ingested graph topology:
   * total CPGNode / CPG_EDGE counts
-  * breakdown by node_type and edge_type (AST / CFG / DFG / CALLS)
+  * breakdown by node_type and edge_type (AST / CFG / DFG / CALL)
   * duplicate detection on node_id and edge_id (idempotency proof: both 0)
   * count of placeholder nodes still missing a node_type (edges seen before
     their node event -- should trend to 0 once the node topic is drained)

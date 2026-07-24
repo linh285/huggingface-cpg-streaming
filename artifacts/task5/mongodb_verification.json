@@ -1,0 +1,21 @@
+{
+    "status":  "PASS",
+    "stream_container_state":  "running",
+    "stream_started":  true,
+    "checkpoint_location":  "/opt/spark-checkpoints/cpg-metadata",
+    "checkpoint_file_count":  48,
+    "mongodb_database":  "cpg",
+    "mongodb_collection":  "source_metadata",
+    "mongo":  {
+                  "count_by_id":  1,
+                  "count_by_file_id":  1,
+                  "document":  {
+                                   "_id":  "6c7f76928a88fa4fd8217323002eb245416159a35a66ca6559463976f8d1fc9c",
+                                   "file_id":  "6c7f76928a88fa4fd8217323002eb245416159a35a66ca6559463976f8d1fc9c",
+                                   "path":  "src/datasets/utils/experimental.py",
+                                   "content_sha256":  "6acb052a2ded7705891b4be5a06fba143eb2881e75612fa606bc31fe8ef677b3",
+                                   "kafka_partition":  0,
+                                   "kafka_offset":  11
+                               }
+              }
+}

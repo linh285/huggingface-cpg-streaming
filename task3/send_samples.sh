@@ -18,6 +18,10 @@ compact_json() {
     python3 -c "import json, sys; print(json.dumps(json.load(open(sys.argv[1])), separators=(',', ':'), ensure_ascii=False))" "$1"
 }
 
+json_field() {
+    python3 -c "import json, sys; print(json.load(open(sys.argv[1], encoding='utf-8'))[sys.argv[2]])" "$1" "$2"
+}
+
 send_message() {
     local topic="$1"
     local key="$2"
@@ -44,25 +48,25 @@ send_message() {
 # 1. Node event → cpg.nodes  (key = node_id)
 send_message \
     "${TOPIC_NODES}" \
-    "node:FunctionDef:arrow_dataset.py:map:L610" \
+    "$(json_field "${SCRIPT_DIR}/samples/node-event.json" node_id)" \
     "${SCRIPT_DIR}/samples/node-event.json"
 
 # 2. Edge event → cpg.edges  (key = edge_id)
 send_message \
     "${TOPIC_EDGES}" \
-    "edge:AST:arrow_dataset.py:Module->FunctionDef:map:L610" \
+    "$(json_field "${SCRIPT_DIR}/samples/edge-event.json" edge_id)" \
     "${SCRIPT_DIR}/samples/edge-event.json"
 
 # 3. Metadata event → cpg.metadata  (key = file_id)
 send_message \
     "${TOPIC_METADATA}" \
-    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" \
+    "$(json_field "${SCRIPT_DIR}/samples/metadata-event.json" file_id)" \
     "${SCRIPT_DIR}/samples/metadata-event.json"
 
 # 4. Error event → cpg.errors  (key = error_id)
 send_message \
     "${TOPIC_ERRORS}" \
-    "err:SyntaxError:broken_example.py:AST_PARSE:L25:C8" \
+    "$(json_field "${SCRIPT_DIR}/samples/error-event.json" error_id)" \
     "${SCRIPT_DIR}/samples/error-event.json"
 
 echo
