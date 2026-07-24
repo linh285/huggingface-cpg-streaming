@@ -1,0 +1,10 @@
+format: jb-book
+root: intro
+chapters:
+  - file: architecture
+  - file: task1
+  - file: task2
+  - file: task3
+  - file: task4
+  - file: task5
+  - file: task6
