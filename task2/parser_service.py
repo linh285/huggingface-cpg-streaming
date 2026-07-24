@@ -62,6 +62,14 @@ def parse_arguments() -> argparse.Namespace:
         help="JSONL output directory; used only with --dry-run.",
     )
     parser.add_argument(
+        "--summary-output",
+        type=Path,
+        help=(
+            "Optional JSON summary path for either Kafka or dry-run mode. "
+            "Dry-run still defaults to <output-dir>/summary.json."
+        ),
+    )
+    parser.add_argument(
         "--state-dir",
         type=Path,
         default=Path(".runtime/parser-state"),
@@ -359,6 +367,7 @@ def main() -> int:
         },
         "dry_run": args.dry_run,
     }
+    fatal_error: str | None = None
 
     try:
         producer = KafkaEventProducer(
@@ -431,13 +440,17 @@ def main() -> int:
 
         producer.flush()
     except Exception as exc:
+        fatal_error = str(exc)
+        summary["fatal_error"] = fatal_error
         print(f"[ERROR] {exc}", file=sys.stderr)
-        return 1
     finally:
         if producer is not None:
             try:
                 producer.close()
             except Exception as exc:
+                if fatal_error is None:
+                    fatal_error = f"Failed to close producer: {exc}"
+                    summary["fatal_error"] = fatal_error
                 print(f"[ERROR] Failed to close producer: {exc}", file=sys.stderr)
 
     finished_at = datetime.now(timezone.utc)
@@ -446,15 +459,18 @@ def main() -> int:
     )
     summary["executed_at"] = finished_at.isoformat()
 
-    if args.dry_run:
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / "summary.json").write_text(
+    summary_output = args.summary_output
+    if summary_output is None and args.dry_run:
+        summary_output = args.output_dir / "summary.json"
+    if summary_output is not None:
+        summary_output.parent.mkdir(parents=True, exist_ok=True)
+        summary_output.write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 1 if summary["error_files"] else 0
+    return 1 if summary["error_files"] or fatal_error is not None else 0
 
 
 if __name__ == "__main__":

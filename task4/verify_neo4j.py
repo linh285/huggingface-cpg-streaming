@@ -21,6 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
 
 COUNT_QUERIES = {
     "total_nodes": "MATCH (n:CPGNode) RETURN count(n) AS value",
@@ -57,6 +60,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--password", default="cpgpassword")
     p.add_argument("--database", default="neo4j")
     p.add_argument("--json", default=None, help="Optional path to write a JSON snapshot.")
+    p.add_argument("--connect-url", default=None, help="Kafka Connect REST base URL.")
+    p.add_argument("--expected-nodes", type=int, default=None)
+    p.add_argument("--expected-edges", type=int, default=None)
+    p.add_argument("--expected-ast-edges", type=int, default=None)
+    p.add_argument("--expected-cfg-edges", type=int, default=None)
+    p.add_argument("--expected-dfg-edges", type=int, default=None)
+    p.add_argument("--expected-call-edges", type=int, default=None)
+    p.add_argument(
+        "--require-zero-placeholders",
+        action="store_true",
+        help="Fail while any edge-created placeholder node remains.",
+    )
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help="Poll expected live counts for at most this many seconds.",
+    )
     return p.parse_args()
 
 
@@ -66,6 +87,77 @@ def scalar(session, query: str) -> int:
 
 def rows(session, query: str) -> list[dict]:
     return [dict(r) for r in session.run(query)]
+
+
+def connector_states(connect_url: str) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for name in ("neo4j-sink-cpg-nodes", "neo4j-sink-cpg-edges"):
+        with urllib.request.urlopen(
+            f"{connect_url.rstrip('/')}/connectors/{name}/status", timeout=5
+        ) as response:
+            status = json.load(response)
+        result[name] = {
+            "connector": status.get("connector", {}).get("state"),
+            "tasks": [task.get("state") for task in status.get("tasks", [])],
+        }
+    return result
+
+
+def connector_mismatches(connectors: dict[str, dict]) -> list[str]:
+    mismatches: list[str] = []
+    for name, status in connectors.items():
+        tasks = status.get("tasks", [])
+        if status.get("connector") != "RUNNING":
+            mismatches.append(f"{name} connector is {status.get('connector')}")
+        if not tasks or any(task != "RUNNING" for task in tasks):
+            mismatches.append(f"{name} tasks are {tasks}")
+    return mismatches
+
+
+def expected_values(args: argparse.Namespace) -> dict[str, int | bool]:
+    values: dict[str, int | bool] = {}
+    for argument, key in (
+        ("expected_nodes", "total_nodes"),
+        ("expected_edges", "total_edges"),
+        ("expected_ast_edges", "AST"),
+        ("expected_cfg_edges", "CFG"),
+        ("expected_dfg_edges", "DFG"),
+        ("expected_call_edges", "CALL"),
+    ):
+        value = getattr(args, argument)
+        if value is not None:
+            values[key] = value
+    if args.require_zero_placeholders:
+        values["placeholder_nodes"] = 0
+    return values
+
+
+def verify_snapshot(
+    args: argparse.Namespace,
+    counts: dict[str, int],
+    edge_breakdown: dict[str, int],
+    duplicate_nodes: list[dict],
+    duplicate_edges: list[dict],
+    connectors: dict[str, dict],
+) -> list[str]:
+    mismatches: list[str] = []
+    expected = expected_values(args)
+    for key in ("total_nodes", "total_edges", "placeholder_nodes"):
+        if key in expected and counts[key] != expected[key]:
+            mismatches.append(f"{key}: expected {expected[key]}, got {counts[key]}")
+    for edge_type in ("AST", "CFG", "DFG", "CALL"):
+        if edge_type in expected and edge_breakdown.get(edge_type, 0) != expected[edge_type]:
+            mismatches.append(
+                f"{edge_type} edges: expected {expected[edge_type]}, "
+                f"got {edge_breakdown.get(edge_type, 0)}"
+            )
+    if counts["total_nodes"] != counts["distinct_node_ids"] or duplicate_nodes:
+        mismatches.append("duplicate node_id values detected")
+    if counts["total_edges"] != counts["distinct_edge_ids"] or duplicate_edges:
+        mismatches.append("duplicate edge_id values detected")
+    if args.connect_url:
+        mismatches.extend(connector_mismatches(connectors))
+    return mismatches
 
 
 def main() -> int:
@@ -83,20 +175,43 @@ def main() -> int:
         print(f"[ERROR] Cannot connect to Neo4j at {args.uri}: {exc}", file=sys.stderr)
         return 1
 
-    with driver.session(database=args.database) as session:
-        counts = {name: scalar(session, q) for name, q in COUNT_QUERIES.items()}
-        node_breakdown = {r["k"]: r["c"] for r in rows(session, NODE_BREAKDOWN)}
-        edge_breakdown = {r["k"]: r["c"] for r in rows(session, EDGE_BREAKDOWN)}
-        dup_nodes = rows(session, DUP_NODES)
-        dup_edges = rows(session, DUP_EDGES)
+    deadline = time.monotonic() + args.timeout
+    while True:
+        with driver.session(database=args.database) as session:
+            counts = {name: scalar(session, q) for name, q in COUNT_QUERIES.items()}
+            node_breakdown = {r["k"]: r["c"] for r in rows(session, NODE_BREAKDOWN)}
+            edge_breakdown = {r["k"]: r["c"] for r in rows(session, EDGE_BREAKDOWN)}
+            dup_nodes = rows(session, DUP_NODES)
+            dup_edges = rows(session, DUP_EDGES)
+        try:
+            connectors = connector_states(args.connect_url) if args.connect_url else {}
+            mismatches = verify_snapshot(
+                args,
+                counts,
+                edge_breakdown,
+                dup_nodes,
+                dup_edges,
+                connectors,
+            )
+        except Exception as exc:
+            connectors = {}
+            mismatches = [f"cannot read Kafka Connect status: {exc}"]
+        if not mismatches or time.monotonic() >= deadline:
+            break
+        time.sleep(2)
     driver.close()
 
     snapshot = {
+        "status": "PASS" if not mismatches else "FAIL",
+        "verified_at": datetime.now(timezone.utc).isoformat(),
         "counts": counts,
         "node_breakdown": node_breakdown,
         "edge_breakdown": edge_breakdown,
         "duplicate_node_ids": dup_nodes,
         "duplicate_edge_ids": dup_edges,
+        "connectors": connectors,
+        "expected": expected_values(args),
+        "mismatches": mismatches,
     }
 
     # --- report ---
@@ -120,11 +235,13 @@ def main() -> int:
     # --- idempotency verdict ---
     node_dupes = counts["total_nodes"] - counts["distinct_node_ids"]
     edge_dupes = counts["total_edges"] - counts["distinct_edge_ids"]
-    ok = (node_dupes == 0 and edge_dupes == 0 and not dup_nodes and not dup_edges)
+    ok = not mismatches
     print(f"Duplicate node_ids : {node_dupes}  (rows>1: {len(dup_nodes)})")
     print(f"Duplicate edge_ids : {edge_dupes}  (rows>1: {len(dup_edges)})")
     print("-" * 60)
-    print(f"IDEMPOTENCY CHECK  : {'PASS -- no duplicates' if ok else 'FAIL -- duplicates found!'}")
+    print(f"VERIFICATION       : {'PASS' if ok else 'FAIL'}")
+    for mismatch in mismatches:
+        print(f"  - {mismatch}")
     print("=" * 60)
 
     if args.json:
